@@ -477,7 +477,7 @@ namespace gem5
         // The latency charged is just the value set by the access() function.
         // In case of a hit we are neglecting response latency.
         // In case of a miss we are neglecting forward latency.
-        Tick request_time = clockEdge(Cycles(0)); // clockEdge(lat);
+        Tick request_time = clockEdge(lat);
         // Here we reset the timing of the packet.
         pkt->headerDelay = pkt->payloadDelay = 0;
 
