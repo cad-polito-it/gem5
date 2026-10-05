@@ -1259,10 +1259,13 @@ namespace gem5
                             fault->invoke(thread, inst->staticInst);
                         }
                     } else if (inst->staticInst->isControl()) {
-                        DPRINTF(MinorExecute, "Not executing control inst because already executed: %s\n", *inst);
-                        //context.writeback(inst->staticInst);
-                        //inst->executed = true;
-                        tryToBranch(inst, fault, branch);
+                        /* Control instructions are executed and resolved in
+                         * Decode.  Resolving them again here observes the
+                         * thread's newer PC and can replace Decode's correct
+                         * branch response with a false misprediction. */
+                        DPRINTF(MinorExecute,
+                                "Control inst already resolved in Decode: %s\n",
+                                *inst);
                     }
                     inst->setRegsAfterExecution(context.getFwdRegFiles());
                 }

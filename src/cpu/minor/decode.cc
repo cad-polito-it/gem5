@@ -374,7 +374,19 @@ namespace gem5
             DPRINTF(Decode, "Early branch: %s\n",
                     reason == BranchData::NoBranch ? "NoBranch" : "Branch");
 
+            /* Branches are executed in Decode in this five-stage model, so
+             * predictor feedback must also be applied here.  Execute must not
+             * resolve the same instruction again using a newer thread PC. */
             branch.reason = reason;
+            set(branch.target, *target);
+            branch.inst = inst;
+            updateBranchPrediction(branch);
+
+            /* A correct taken prediction still has to reach Fetch1 as a
+             * stream change.  predictBranch already allocated its prediction
+             * sequence number, so retain that BranchPrediction response. */
+            if (reason == BranchData::CorrectlyPredictedBranch)
+                branch.reason = BranchData::BranchPrediction;
         }
         void
         Decode::pushIntoInpBuffer()
@@ -1092,14 +1104,21 @@ namespace gem5
                                 dumpIfBranchesExecuted(prediction);
                                 decode_info.expectedStreamSeqNum = inst_ptr_4_GUI->id.streamSeqNum;
                                 ThreadContext *thread = cpu.getContext(inst_ptr_4_GUI->id.threadId);
+                                bool needs_new_prediction_seq =
+                                    prediction.isStreamChange() &&
+                                    !(prediction.reason == BranchData::BranchPrediction &&
+                                      inst_ptr_4_GUI->predictedTaken);
                                 prediction = BranchData(prediction.reason,
-                                                                   inst_ptr_4_GUI->id.threadId,
-                                                                   inst_ptr_4_GUI->id.streamSeqNum, prediction.isStreamChange() ? decode_info.predictionSeqNum + 1 : decode_info.predictionSeqNum,
-                                                                   *thread->pcState().clone(), inst_ptr_4_GUI);
+                                                        inst_ptr_4_GUI->id.threadId,
+                                                        inst_ptr_4_GUI->id.streamSeqNum,
+                                                        decode_info.predictionSeqNum +
+                                                            (needs_new_prediction_seq ? 1 : 0),
+                                                        *thread->pcState().clone(),
+                                                        inst_ptr_4_GUI);
 
                                 /* Mark with a new prediction number by the stream number of the
                                  *  instruction causing the prediction */
-                                if (prediction.isStreamChange())
+                                if (needs_new_prediction_seq)
                                 {
                                     decode_info.predictionSeqNum++;
                                 }
@@ -1216,14 +1235,21 @@ namespace gem5
                                 dumpIfBranchesExecuted(prediction);
                                 decode_info.expectedStreamSeqNum = inst_ptr_4_GUI->id.streamSeqNum;
                                 ThreadContext *thread = cpu.getContext(inst_ptr_4_GUI->id.threadId);
+                                bool needs_new_prediction_seq =
+                                    prediction.isStreamChange() &&
+                                    !(prediction.reason == BranchData::BranchPrediction &&
+                                      inst_ptr_4_GUI->predictedTaken);
                                 prediction = BranchData(prediction.reason,
                                                         inst_ptr_4_GUI->id.threadId,
-                                                        inst_ptr_4_GUI->id.streamSeqNum, prediction.isStreamChange() ? decode_info.predictionSeqNum + 1 : decode_info.predictionSeqNum,
-                                                        *thread->pcState().clone(), inst_ptr_4_GUI);
+                                                        inst_ptr_4_GUI->id.streamSeqNum,
+                                                        decode_info.predictionSeqNum +
+                                                            (needs_new_prediction_seq ? 1 : 0),
+                                                        *thread->pcState().clone(),
+                                                        inst_ptr_4_GUI);
 
                                 /* Mark with a new prediction number by the stream number of the
                                  *  instruction causing the prediction */
-                                if (prediction.isStreamChange())
+                                if (needs_new_prediction_seq)
                                 {
                                     decode_info.predictionSeqNum++;
                                 }
