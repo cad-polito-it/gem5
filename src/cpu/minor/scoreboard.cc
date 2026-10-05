@@ -267,7 +267,17 @@ namespace gem5
                                         (*cant_forward_from_fu_indices)[src_reg_fu];
 
                     Cycles relative_latency = (cant_forward ? Cycles(0) : (src_index >= num_relative_latencies ? default_relative_latency : (*src_reg_relative_latencies)[src_index]));
-                    Cycles retCycle = inst->isInst() && inst->staticInst->isControl() ? oldReturnCycles[index] : returnCycle[index];
+                    Cycles retCycle = returnCycle[index];
+                    /* A control instruction must observe the newest pending
+                     * producer. oldReturnCycles is useful only after that
+                     * producer has cleared the scoreboard; using it while a
+                     * result is still pending can release a branch with a
+                     * stale architectural register value. */
+                    if (inst->isInst() && inst->staticInst->isControl() &&
+                        numResults[index] == 0)
+                    {
+                        retCycle = oldReturnCycles[index];
+                    }
                     if (retCycle > (now + relative_latency) ||
                         numUnpredictableResults[index] != 0)
                     {
