@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015 Jason Power
 # All rights reserved.
 #
@@ -25,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" This file creates a system with Ruby caches and executes 'threads', a
+"""This file creates a system with Ruby caches and executes 'threads', a
 simple multi-threaded application with false sharing to stress the Ruby
 protocol.
 
@@ -61,7 +60,7 @@ system.clk_domain.voltage_domain = VoltageDomain()
 
 # Set up the system
 system.mem_mode = "timing"  # Use timing accesses
-system.mem_ranges = [AddrRange("512MB")]  # Create an address range
+system.mem_ranges = [AddrRange("512MiB")]  # Create an address range
 
 # Create a pair of simple CPUs
 system.cpu = [X86TimingSimpleCPU() for i in range(2)]
@@ -110,6 +109,4 @@ m5.instantiate()
 
 print("Beginning simulation!")
 exit_event = m5.simulate()
-print(
-    "Exiting @ tick {} because {}".format(m5.curTick(), exit_event.getCause())
-)
+print(f"Exiting @ tick {m5.curTick()} because {exit_event.getCause()}")

@@ -24,27 +24,35 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.objects import Port, IOXBar, AddrRange
+from typing import (
+    List,
+    Optional,
+)
+
+from m5.objects import (
+    IOXBar,
+    PciBus,
+)
+from m5.params import (
+    AddrRange,
+    Port,
+)
 
 from ...utils.override import overrides
+from ..cachehierarchies.abstract_cache_hierarchy import AbstractCacheHierarchy
+from ..memory.abstract_memory_system import AbstractMemorySystem
+from ..processors.abstract_generator import AbstractGenerator
 from .abstract_board import AbstractBoard
 from .abstract_system_board import AbstractSystemBoard
-from ..processors.abstract_generator import AbstractGenerator
-from ..memory.abstract_memory_system import AbstractMemorySystem
-from ..cachehierarchies.abstract_cache_hierarchy import AbstractCacheHierarchy
-
-
-from typing import List, Optional
 
 
 class TestBoard(AbstractSystemBoard):
-
     """This is a Testing Board used to run traffic generators on a simple
     architecture.
 
     To work as a traffic generator board, pass a generator as a processor.
 
-    This board does not require a cache hierarchy (it can be none) in which
+    This board does not require a cache hierarchy (it can be ``none``) in which
     case the processor (generator) will be directly connected to the memory.
     The clock frequency is only used if there is a cache hierarchy or when
     using the GUPS generators.
@@ -78,6 +86,17 @@ class TestBoard(AbstractSystemBoard):
         raise NotImplementedError(
             "The TestBoard does not have an IO Bus. "
             "Use `has_io_bus()` to check this."
+        )
+
+    @overrides(AbstractSystemBoard)
+    def has_pci_bus(self) -> bool:
+        return False
+
+    @overrides(AbstractSystemBoard)
+    def get_pci_bus(self) -> PciBus:
+        raise NotImplementedError(
+            "The TestBoard does not have an PCI Bus. "
+            "Use `has_pci_bus()` to check this."
         )
 
     @overrides(AbstractSystemBoard)

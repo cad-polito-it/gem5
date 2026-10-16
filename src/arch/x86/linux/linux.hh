@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2024 Arm Limited
  * Copyright (c) 2007 The Hewlett-Packard Development Company
  * All rights reserved.
  *
@@ -77,7 +78,6 @@ class X86Linux : public Linux
     class SyscallABI {};
 };
 
-GEM5_DEPRECATED_NAMESPACE(GuestABI, guest_abi);
 namespace guest_abi
 {
 
@@ -118,6 +118,49 @@ class X86Linux64 : public X86Linux, public OpenFlagTable<X86Linux64>
         uint64_t st_ctimeX;
         uint64_t st_ctime_nsec;
         int64_t unused0[3];
+    };
+
+    struct tgt_statx
+    {
+        /* 0x00 */
+        uint32_t stx_mask;
+        uint32_t stx_blksize;
+        uint64_t stx_attributes;
+        /* 0x10 */
+        uint32_t stx_nlink;
+        uint32_t stx_uid;
+        uint32_t stx_gid;
+        uint16_t stx_mode;
+        uint16_t stx_spare0;
+        /* 0x20 */
+        uint64_t stx_ino;
+        uint64_t stx_size;
+        uint64_t stx_blocks;
+        uint64_t stx_attributes_mask;
+        /* 0x40 */
+        uint64_t stx_atimeX;
+        uint32_t stx_atime_nsec;
+        int32_t  stx_atime_reserved;
+        uint64_t stx_btimeX;
+        uint32_t stx_btime_nsec;
+        int32_t  stx_btime_reserved;
+        uint64_t stx_ctimeX;
+        uint32_t stx_ctime_nsec;
+        int32_t  stx_ctime_reserved;
+        uint64_t stx_mtimeX;
+        uint32_t stx_mtime_nsec;
+        int32_t  stx_mtime_reserved;
+        /* 0x80 */
+        uint32_t stx_rdev_major;
+        uint32_t stx_rdev_minor;
+        uint32_t stx_dev_major;
+        uint32_t stx_dev_minor;
+        /* 0x90 */
+        uint64_t stx_mnt_id;
+        uint64_t stx_spare2;
+        /* 0xa0 */
+        uint64_t stx_spare3[12];
+        /* 0x100 */
     };
 
     struct tgt_fsid
@@ -198,7 +241,7 @@ class X86Linux64 : public X86Linux, public OpenFlagTable<X86Linux64>
     //@{
     /// Basic X86_64 Linux types
     typedef uint64_t size_t;
-    typedef uint64_t off_t;
+    typedef int64_t off_t;
     typedef int64_t time_t;
     typedef int64_t clock_t;
     //@}
@@ -345,7 +388,7 @@ class X86Linux32 : public X86Linux, public OpenFlagTable<X86Linux32>
     //@{
     /// Basic X86 Linux types
     typedef uint32_t size_t;
-    typedef uint32_t off_t;
+    typedef int32_t off_t;
     typedef int32_t time_t;
     typedef int32_t clock_t;
     //@}

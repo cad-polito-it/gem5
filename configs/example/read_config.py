@@ -1,4 +1,4 @@
-# Copyright (c) 2014,2019 ARM Limited
+# Copyright (c) 2014,2019, 2025 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -68,8 +68,7 @@ sim_object_classes_by_name = {
 
 def no_parser(cls, flags, param):
     raise Exception(
-        "Can't parse string: %s for parameter"
-        " class: %s" % (str(param), cls.__name__)
+        f"Can't parse string: {str(param)} for parameter class: {cls.__name__}"
     )
 
 
@@ -114,7 +113,7 @@ def memory_bandwidth_parser(cls, flags, param):
     value = 1.0 / float(param)
     # Convert to byte/s
     value = ticks.fromSeconds(value)
-    return cls("%fB/s" % value)
+    return cls(f"{value:f}B/s")
 
 
 # These parameters have trickier parsing from .ini files than might be
@@ -141,7 +140,7 @@ for name, parser in list(param_parsers.items()):
     setattr(m5.params.__dict__[name], "parse_ini", classmethod(parser))
 
 
-class PortConnection(object):
+class PortConnection:
     """This class is similar to m5.params.PortRef but with just enough
     information for ConfigManager"""
 
@@ -152,7 +151,7 @@ class PortConnection(object):
 
     @classmethod
     def from_string(cls, str):
-        m = re.match("(.*)\.([^.\[]+)(\[(\d+)\])?", str)
+        m = re.match(r"(.*)\.([^.\[]+)(\[(\d+)\])?", str)
         object_name, port_name, whole_index, index = m.groups()
         if index is not None:
             index = int(index)
@@ -179,7 +178,7 @@ def to_list(v):
         return [v]
 
 
-class ConfigManager(object):
+class ConfigManager:
     """Manager for parsing a Root configuration from a config file"""
 
     def __init__(self, config):
@@ -201,8 +200,7 @@ class ConfigManager(object):
 
         if object_type not in sim_object_classes_by_name:
             raise Exception(
-                "No SimObject type %s is available to"
-                " build: %s" % (object_type, object_name)
+                f"No SimObject type {object_type} is available to build: {object_name}"
             )
 
         object_class = sim_object_classes_by_name[object_type]
@@ -210,21 +208,37 @@ class ConfigManager(object):
         parsed_params = {}
 
         for param_name, param in list(object_class._params.items()):
-            if issubclass(param.ptype, m5.params.ParamValue):
-                if isinstance(param, m5.params.VectorParamDesc):
-                    param_values = self.config.get_param_vector(
-                        object_name, param_name
-                    )
+            if isinstance(param, m5.params.VectorParamDesc) and issubclass(
+                param.ptype, m5.params.ParamValue
+            ):
+                param_values = self.config.get_param_vector(
+                    object_name, param_name
+                )
 
-                    param_value = [
-                        param.ptype.parse_ini(self.flags, value)
-                        for value in param_values
-                    ]
-                else:
-                    param_value = param.ptype.parse_ini(
-                        self.flags,
-                        self.config.get_param(object_name, param_name),
-                    )
+                param_value = [
+                    param.ptype.parse_ini(self.flags, value)
+                    for value in param_values
+                ]
+
+                parsed_params[param_name] = param_value
+            elif isinstance(param, m5.params.DictParamDesc):
+                param_values = self.config.get_param_dict(
+                    object_name, param_name
+                )
+
+                param_value = {
+                    param.key_desc.ptype.parse_ini(
+                        self.flags, key
+                    ): param.val_desc.ptype.parse_ini(self.flags, val)
+                    for key, val in param_values.items()
+                }
+
+                parsed_params[param_name] = param_value
+            elif issubclass(param.ptype, m5.params.ParamValue):
+                param_value = param.ptype.parse_ini(
+                    self.flags,
+                    self.config.get_param(object_name, param_name),
+                )
 
                 parsed_params[param_name] = param_value
 
@@ -252,9 +266,11 @@ class ConfigManager(object):
                         obj,
                         param_name,
                         [
-                            self.objects_by_name[name]
-                            if name != "Null"
-                            else m5.params.NULL
+                            (
+                                self.objects_by_name[name]
+                                if name != "Null"
+                                else m5.params.NULL
+                            )
                             for name in param_values
                         ],
                     )
@@ -298,7 +314,7 @@ class ConfigManager(object):
     def parse_port_name(self, port):
         """Parse the name of a port"""
 
-        m = re.match("(.*)\.([^.\[]+)(\[(\d+)\])?", port)
+        m = re.match(r"(.*)\.([^.\[]+)(\[(\d+)\])?", port)
         peer, peer_port, whole_index, index = m.groups()
         if index is not None:
             index = int(index)
@@ -368,7 +384,6 @@ class ConfigManager(object):
             if port_has_correct_index(from_port) and port_has_correct_index(
                 to_port
             ):
-
                 connections_to_make.append((from_port, to_port))
 
                 increment_port_index(from_port)
@@ -418,7 +433,7 @@ class ConfigManager(object):
         self.bind_ports(connections)
 
 
-class ConfigFile(object):
+class ConfigFile:
     def get_flags(self):
         return set()
 
@@ -440,6 +455,11 @@ class ConfigFile(object):
         configuration as a list of strings"""
         pass
 
+    def get_param_dict(self, object_name, param_name):
+        """Get a vector param or vector of SimObject references from the
+        configuration as a list of strings"""
+        pass
+
     def get_object_children(self, object_name):
         """Get a list of (name, paths) for each child of this object.
         paths is either a single string object path or a list of object
@@ -447,7 +467,7 @@ class ConfigFile(object):
         pass
 
     def get_port_peers(self, object_name, port_name):
-        """Get the list of connected port names (in the string form
+        r"""Get the list of connected port names (in the string form
         object.port(\[index\])?) of the port object_name.port_name"""
         pass
 
@@ -468,6 +488,21 @@ class ConfigIniFile(ConfigFile):
     def get_param_vector(self, object_name, param_name):
         return self.parser.get(object_name, param_name).split()
 
+    def get_param_dict(self, object_name, param_name):
+        """
+        DictParams in the ini file are stored as a flat list
+        of objects, with keys in the even indices and values
+        in the odd indices. The method is unflattening the
+        list into the matching dictionary
+        """
+        ret = dict()
+        flat_list = self.parser.get(object_name, param_name).split()
+        keys = flat_list[0::2]
+        vals = flat_list[1::2]
+        for key, val in zip(keys, vals):
+            ret[key] = val
+        return ret
+
     def get_object_children(self, object_name):
         if self.parser.has_option(object_name, "children"):
             children = self.parser.get(object_name, "children")
@@ -479,7 +514,7 @@ class ConfigIniFile(ConfigFile):
             if object_name == "root":
                 return child_name
             else:
-                return "%s.%s" % (object_name, child_name)
+                return f"{object_name}.{child_name}"
 
         return [(name, make_path(name)) for name in child_names]
 
@@ -510,7 +545,7 @@ class ConfigJsonFile(ConfigFile):
                 self.find_all_objects(elem)
 
     def load(self, config_file):
-        root = json.load(open(config_file, "r"))
+        root = json.load(open(config_file))
         self.object_dicts = {}
         self.find_all_objects(root)
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2013,2016-2018, 2022 Arm Limited
+ * Copyright (c) 2010-2013,2016-2018, 2022, 2025 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -169,7 +169,8 @@ class ArmStaticInst : public StaticInst
     void printFloatReg(std::ostream &os, RegIndex reg_idx) const;
     void printVecReg(std::ostream &os, RegIndex reg_idx,
                      bool isSveVecReg = false) const;
-    void printVecPredReg(std::ostream &os, RegIndex reg_idx) const;
+    void printVecPredReg(std::ostream &os, RegIndex reg_idx,
+                         bool is_png = false) const;
     void printCCReg(std::ostream &os, RegIndex reg_idx) const;
     void printMiscReg(std::ostream &os, RegIndex reg_idx) const;
     void printMnemonic(std::ostream &os,
@@ -513,6 +514,35 @@ class ArmStaticInst : public StaticInst
      */
     Fault checkSveEnabled(ThreadContext *tc, CPSR cpsr, CPACR cpacr) const;
 
+
+    /**
+     * Trap an access to SME registers due to access control bits.
+     *
+     * @param el Target EL for the trap.
+     * @param iss ISS to be used for the trap.
+     */
+    Fault smeAccessTrap(ExceptionLevel el, uint32_t iss = 0) const;
+
+    /**
+     * Check if SME is enabled by checking the SME and FP bits of
+     * CPACR_EL1, CPTR_EL2, and CPTR_EL3
+     */
+    Fault checkSmeEnabled(ThreadContext *tc, CPSR cpsr, CPACR cpacr) const;
+
+    /**
+     * Check an SME access against CPACR_EL1, CPTR_EL2, and CPTR_EL3.
+     * This is purely used from the management instructions as it should
+     * be possible to call SMSTART/SMSTOP without having the floating
+     * point flags correctly set up.
+     */
+    Fault checkSmeAccess(ThreadContext *tc, CPSR cpsr, CPACR cpacr) const;
+
+    /**
+     * Check an SVE access against CPACR_EL1, CPTR_EL2, and CPTR_EL3, but
+     * choosing the correct set of traps to check based on Streaming Mode
+     */
+    Fault checkSveSmeEnabled(ThreadContext *tc, CPSR cpsr, CPACR cpacr) const;
+
     /**
      * Get the new PSTATE from a SPSR register in preparation for an
      * exception return.
@@ -583,13 +613,45 @@ class ArmStaticInst : public StaticInst
         return getCurSveVecLenInBits(tc) / (8 * sizeof(T));
     }
 
+    static unsigned getCurSmeVecLenInBits(ThreadContext *tc);
+
+    static unsigned
+    getCurSmeVecLenInQWords(ThreadContext *tc)
+    {
+        return getCurSmeVecLenInBits(tc) >> 6;
+    }
+
+    template<typename T>
+    static unsigned
+    getCurSmeVecLen(ThreadContext *tc)
+    {
+        return getCurSmeVecLenInBits(tc) / (8 * sizeof(T));
+    }
+
     inline Fault
     undefined(bool disabled=false) const
     {
         return std::make_shared<UndefinedInstruction>(
             machInst, false, mnemonic, disabled);
     }
+
+    Fault
+    generateTrap(ArmISA::ExceptionLevel el,
+                 ArmISA::ExceptionClass ec, uint32_t iss) const;
 };
+
+template <>
+inline __uint128_t
+ArmStaticInst::cSwap<__uint128_t>(__uint128_t val, bool big)
+{
+    if (big) {
+        uint64_t high64 = letobe(static_cast<uint64_t>(val));
+        uint64_t low64 = letobe(static_cast<uint64_t>(val >> 64));
+        return ((__uint128_t)high64 << 64) | (__uint128_t)low64;
+    } else {
+        return val;
+    }
+}
 
 } // namespace ArmISA
 } // namespace gem5

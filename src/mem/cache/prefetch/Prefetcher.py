@@ -1,4 +1,5 @@
-# Copyright (c) 2012, 2014, 2019 ARM Limited
+# Copyright (c) 2012, 2014, 2019, 2022-2025 Arm Limited
+# Copyright (c) 2023 The University of Edinburgh
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -36,16 +37,17 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.SimObject import *
-from m5.params import *
-from m5.proxy import *
-
+from m5.citations import add_citation
 from m5.objects.ClockedObject import ClockedObject
 from m5.objects.IndexingPolicies import *
 from m5.objects.ReplacementPolicies import *
+from m5.objects.Tags import *
+from m5.params import *
+from m5.proxy import *
+from m5.SimObject import *
 
 
-class HWPProbeEvent(object):
+class HWPProbeEvent:
     def __init__(self, prefetcher, obj, *listOfNames):
         self.obj = obj
         self.prefetcher = prefetcher
@@ -64,7 +66,7 @@ class BasePrefetcher(ClockedObject):
     abstract = True
     cxx_class = "gem5::prefetch::Base"
     cxx_header = "mem/cache/prefetch/base.hh"
-    cxx_exports = [PyBindMethod("addEventProbe"), PyBindMethod("addTLB")]
+    cxx_exports = [PyBindMethod("addEventProbe"), PyBindMethod("addMMU")]
     sys = Param.System(Parent.any, "System this prefetcher belongs to")
 
     # Get the block size from the parent (system)
@@ -76,11 +78,11 @@ class BasePrefetcher(ClockedObject):
     on_data = Param.Bool(True, "Notify prefetcher on data accesses")
     on_inst = Param.Bool(True, "Notify prefetcher on instruction accesses")
     prefetch_on_access = Param.Bool(
-        Parent.prefetch_on_access,
+        False,
         "Notify the hardware prefetcher on every access (not just misses)",
     )
     prefetch_on_pf_hit = Param.Bool(
-        Parent.prefetch_on_pf_hit,
+        True,
         "Notify the hardware prefetcher on hit on prefetched lines",
     )
     use_virtual_addresses = Param.Bool(
@@ -93,7 +95,7 @@ class BasePrefetcher(ClockedObject):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._events = []
-        self._tlbs = []
+        self._mmus = []
 
     def addEvent(self, newObject):
         self._events.append(newObject)
@@ -101,8 +103,8 @@ class BasePrefetcher(ClockedObject):
     # Override the normal SimObject::regProbeListeners method and
     # register deferred event handlers.
     def regProbeListeners(self):
-        for tlb in self._tlbs:
-            self.getCCObject().addTLB(tlb.getCCObject())
+        for mmu in self._mmus:
+            self.getCCObject().addMMU(mmu.getCCObject())
         for event in self._events:
             event.register()
         self.getCCObject().regProbeListeners()
@@ -114,10 +116,10 @@ class BasePrefetcher(ClockedObject):
             raise TypeError("probeNames must have at least one element")
         self.addEvent(HWPProbeEvent(self, simObj, *probeNames))
 
-    def registerTLB(self, simObj):
+    def registerMMU(self, simObj):
         if not isinstance(simObj, SimObject):
             raise TypeError("argument must be a SimObject type")
-        self._tlbs.append(simObj)
+        self._mmus.append(simObj)
 
 
 class MultiPrefetcher(BasePrefetcher):
@@ -165,7 +167,7 @@ class QueuedPrefetcher(BasePrefetcher):
     )
 
 
-class StridePrefetcherHashedSetAssociative(SetAssociative):
+class StridePrefetcherHashedSetAssociative(TaggedSetAssociative):
     type = "StridePrefetcherHashedSetAssociative"
     cxx_class = "gem5::prefetch::StridePrefetcherHashedSetAssociative"
     cxx_header = "mem/cache/prefetch/stride.hh"
@@ -191,11 +193,25 @@ class StridePrefetcher(QueuedPrefetcher):
 
     use_requestor_id = Param.Bool(True, "Use requestor id based history")
 
+    use_cache_line_address = Param.Bool(
+        True,
+        "If this parameter is set to True, then the prefetcher will "
+        "operate on cache line addresses, else it would operate on word "
+        "addresses",
+    )
+
     degree = Param.Int(4, "Number of prefetches to generate")
+    distance = Param.Unsigned(
+        0,
+        "How far ahead of the demand stream to start prefetching. "
+        "Skip this number of strides ahead of the first identified prefetch, "
+        "then generate `degree` prefetches at `stride` intervals. "
+        "A value of zero indicates no skip.",
+    )
 
     table_assoc = Param.Int(4, "Associativity of the PC table")
     table_entries = Param.MemorySize("64", "Number of entries of the PC table")
-    table_indexing_policy = Param.BaseIndexingPolicy(
+    table_indexing_policy = Param.TaggedIndexingPolicy(
         StridePrefetcherHashedSetAssociative(
             entry_size=1, assoc=Parent.table_assoc, size=Parent.table_entries
         ),
@@ -222,8 +238,8 @@ class IndirectMemoryPrefetcher(QueuedPrefetcher):
         "16", "Number of entries of the Prefetch Table"
     )
     pt_table_assoc = Param.Unsigned(16, "Associativity of the Prefetch Table")
-    pt_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    pt_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.pt_table_assoc,
             size=Parent.pt_table_entries,
@@ -243,8 +259,8 @@ class IndirectMemoryPrefetcher(QueuedPrefetcher):
     ipd_table_assoc = Param.Unsigned(
         4, "Associativity of the Indirect Pattern Detector"
     )
-    ipd_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    ipd_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.ipd_table_assoc,
             size=Parent.ipd_table_entries,
@@ -282,8 +298,8 @@ class SignaturePathPrefetcher(QueuedPrefetcher):
     signature_table_assoc = Param.Unsigned(
         2, "Associativity of the signature table"
     )
-    signature_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    signature_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.signature_table_assoc,
             size=Parent.signature_table_entries,
@@ -306,8 +322,8 @@ class SignaturePathPrefetcher(QueuedPrefetcher):
     strides_per_pattern_entry = Param.Unsigned(
         4, "Number of strides stored in each pattern entry"
     )
-    pattern_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    pattern_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.pattern_table_assoc,
             size=Parent.pattern_table_entries,
@@ -342,8 +358,8 @@ class SignaturePathPrefetcherV2(SignaturePathPrefetcher):
     global_history_register_entries = Param.MemorySize(
         "8", "Number of entries of global history register"
     )
-    global_history_register_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    global_history_register_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.global_history_register_entries,
             size=Parent.global_history_register_entries,
@@ -378,8 +394,8 @@ class AccessMapPatternMatching(ClockedObject):
     access_map_table_assoc = Param.Unsigned(
         8, "Associativity of the access map table"
     )
-    access_map_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    access_map_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.access_map_table_assoc,
             size=Parent.access_map_table_entries,
@@ -474,8 +490,8 @@ class IrregularStreamBufferPrefetcher(QueuedPrefetcher):
     training_unit_entries = Param.MemorySize(
         "128", "Number of entries of the training unit"
     )
-    training_unit_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    training_unit_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.training_unit_assoc,
             size=Parent.training_unit_entries,
@@ -495,8 +511,8 @@ class IrregularStreamBufferPrefetcher(QueuedPrefetcher):
     address_map_cache_entries = Param.MemorySize(
         "128", "Number of entries of the PS/SP AMCs"
     )
-    ps_address_map_cache_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    ps_address_map_cache_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.address_map_cache_assoc,
             size=Parent.address_map_cache_entries,
@@ -507,8 +523,8 @@ class IrregularStreamBufferPrefetcher(QueuedPrefetcher):
         LRURP(),
         "Replacement policy of the Physical-to-Structural Address Map Cache",
     )
-    sp_address_map_cache_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    sp_address_map_cache_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.address_map_cache_assoc,
             size=Parent.address_map_cache_entries,
@@ -574,6 +590,32 @@ class BOPPrefetcher(QueuedPrefetcher):
                 queue",
     )
 
+    # BOP is a degree one prefetcher
+    degree = Param.Int(1, "Number of prefetches to generate")
+
+    queue_squash = True
+    queue_filter = True
+    cache_snoop = True
+    prefetch_on_pf_hit = True
+    on_miss = True
+    on_inst = False
+
+
+class SmsPrefetcher(QueuedPrefetcher):
+    # Paper: https://web.eecs.umich.edu/~twenisch/papers/isca06.pdf
+    type = "SmsPrefetcher"
+    cxx_class = "gem5::prefetch::Sms"
+    cxx_header = "mem/cache/prefetch/sms.hh"
+    ft_size = Param.Unsigned(64, "Size of Filter and Active generation table")
+    pht_size = Param.Unsigned(16384, "Size of pattern history table")
+    region_size = Param.Unsigned(4096, "Spatial region size")
+
+    queue_squash = True
+    queue_filter = True
+    cache_snoop = True
+    prefetch_on_access = True
+    on_inst = False
+
 
 class SBOOEPrefetcher(QueuedPrefetcher):
     type = "SBOOEPrefetcher"
@@ -603,8 +645,8 @@ class STeMSPrefetcher(QueuedPrefetcher):
     active_generation_table_assoc = Param.Unsigned(
         64, "Associativity of the active generation table"
     )
-    active_generation_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    active_generation_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.active_generation_table_assoc,
             size=Parent.active_generation_table_entries,
@@ -621,8 +663,8 @@ class STeMSPrefetcher(QueuedPrefetcher):
     pattern_sequence_table_assoc = Param.Unsigned(
         16384, "Associativity of the pattern sequence table"
     )
-    pattern_sequence_table_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    pattern_sequence_table_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1,
             assoc=Parent.pattern_sequence_table_assoc,
             size=Parent.pattern_sequence_table_entries,
@@ -671,8 +713,8 @@ class PIFPrefetcher(QueuedPrefetcher):
 
     index_entries = Param.MemorySize("64", "Number of entries in the index")
     index_assoc = Param.Unsigned(64, "Associativity of the index")
-    index_indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(
+    index_indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(
             entry_size=1, assoc=Parent.index_assoc, size=Parent.index_entries
         ),
         "Indexing policy of the index",
@@ -687,3 +729,64 @@ class PIFPrefetcher(QueuedPrefetcher):
         self.addEvent(
             HWPProbeEventRetiredInsts(self, simObj, "RetiredInstsPC")
         )
+
+
+class FetchDirectedPrefetcher(BasePrefetcher):
+    type = "FetchDirectedPrefetcher"
+    cxx_class = "gem5::prefetch::FetchDirectedPrefetcher"
+    cxx_header = "mem/cache/prefetch/fdp.hh"
+    cxx_exports = [PyBindMethod("setCache")]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._cache = None
+
+    def regProbeListeners(self):
+        if self._cache:
+            self.getCCObject().setCache(self._cache.getCCObject())
+        super().regProbeListeners()
+
+    def registerCache(self, simObj):
+        if not isinstance(simObj, SimObject):
+            raise TypeError("argument must be a SimObject type")
+        self._cache = simObj
+
+    cpu = Param.BaseCPU(Parent.any, "The CPU to train the predictor")
+
+    latency = Param.Cycles(1, "Latency for generated prefetches")
+    pfq_size = Param.Unsigned(64, "Maximum number of queued prefetches")
+    tq_size = Param.Unsigned(64, "Maximum number of outstanding translations")
+
+    mark_req_as_prefetch = Param.Bool(
+        True,
+        "Mark memory requests as prefetches. Allows different handlings of "
+        "request. E.g. the Arm TLB drops prefetch requests on a miss.",
+    )
+    squash_prefetches = Param.Bool(
+        True,
+        "Squash the prefetch associated with a fetch target in case it gets "
+        "removded fron the the FTQ (Fetch consumes it or a pipeline flush).",
+    )
+    cache_snoop = Param.Bool(
+        True,
+        "Snoop the icache (if present) and do not enqueue prefetches for "
+        "blocks already in the cache.",
+    )
+
+
+add_citation(
+    FetchDirectedPrefetcher,
+    """@inproceedings{10.1145/3613424.3614258,
+  author    = {Schall, David and
+               Sandberg, Andreas and
+               Grot, Boris},
+  title     = {Warming Up a Cold Front-End with Ignite},
+  year      = {2023},
+  publisher = {Association for Computing Machinery},
+  address   = {Toronto, ON, Canada},
+  doi       = {10.1145/3613424.3614258},
+  booktitle = {Proceedings of the 56th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO '23)},
+  series    = {MICRO'23}
+}
+""",
+)

@@ -49,7 +49,7 @@ def addAmdGPUOptions(parser):
         "--cu-per-sqc",
         type=int,
         default=4,
-        help="number of CUs sharing an SQC" " (icache, and thus icache TLB)",
+        help="number of CUs sharing an SQC (icache, and thus icache TLB)",
     )
     parser.add_argument(
         "--cu-per-scalar-cache",
@@ -102,19 +102,19 @@ def addAmdGPUOptions(parser):
         "--issue-period",
         type=int,
         default=4,
-        help="Number of cycles per vector instruction issue" " period",
+        help="Number of cycles per vector instruction issue period",
     )
     parser.add_argument(
         "--glbmem-wr-bus-width",
         type=int,
         default=32,
-        help="VGPR to Coalescer (Global Memory) data bus width" " in bytes",
+        help="VGPR to Coalescer (Global Memory) data bus width in bytes",
     )
     parser.add_argument(
         "--glbmem-rd-bus-width",
         type=int,
         default=32,
-        help="Coalescer to VGPR (Global Memory) data bus width" " in bytes",
+        help="Coalescer to VGPR (Global Memory) data bus width in bytes",
     )
     # Currently we only support 1 local memory pipe
     parser.add_argument(
@@ -204,20 +204,20 @@ def addAmdGPUOptions(parser):
     parser.add_argument(
         "--LocalMemBarrier",
         action="store_true",
-        help="Barrier does not wait for writethroughs to " " complete",
+        help="Barrier does not wait for writethroughs to complete",
     )
     parser.add_argument(
         "--countPages",
         action="store_true",
-        help="Count Page Accesses and output in " " per-CU output files",
+        help="Count Page Accesses and output in per-CU output files",
     )
     parser.add_argument(
-        "--TLB-prefetch", type=int, help="prefetch depth for" "TLBs"
+        "--TLB-prefetch", type=int, help="prefetch depth for TLBs"
     )
     parser.add_argument(
         "--pf-type",
         type=str,
-        help="type of prefetch: " "PF_CU, PF_WF, PF_PHASE, PF_STRIDE",
+        help="type of prefetch: PF_CU, PF_WF, PF_PHASE, PF_STRIDE",
     )
     parser.add_argument("--pf-stride", type=int, help="set prefetch stride")
     parser.add_argument(
@@ -246,4 +246,78 @@ def addAmdGPUOptions(parser):
         type=str,
         default="simple",
         help="register allocation policy (simple/dynamic)",
+    )
+
+    parser.add_argument(
+        "--register-file-cache-size",
+        type=int,
+        default=0,
+        help="number of registers in cache",
+    )
+
+    parser.add_argument(
+        "--memtime-latency",
+        type=int,
+        # Set to a default of 41 from micro-benchmarks
+        default=41,
+        help="Latency for memtimes in scalar memory pipeline.",
+    )
+
+    parser.add_argument(
+        "--vrf_lm_bus_latency",
+        type=int,
+        default=1,
+        help="Latency while accessing shared memory",
+    )
+
+    parser.add_argument(
+        "--max-cu-tokens",
+        type=int,
+        default=4,
+        help="Number of coalescer tokens per CU",
+    )
+
+    parser.add_argument(
+        "--mem-req-latency",
+        type=int,
+        default=50,
+        help="Latency for requests from the cu to ruby.",
+    )
+
+    parser.add_argument(
+        "--mem-resp-latency",
+        type=int,
+        default=50,
+        help="Latency for responses from ruby to the cu.",
+    )
+
+    parser.add_argument(
+        "--scalar-mem-req-latency",
+        type=int,
+        default=50,
+        help="Latency for scalar requests from the cu to ruby.",
+    )
+
+    parser.add_argument(
+        "--scalar-mem-resp-latency",
+        type=int,
+        # Set to 0 as the scalar cache response path does not model
+        # response latency yet and this parameter is currently not used
+        default=0,
+        help="Latency for scalar responses from ruby to the cu.",
+    )
+
+    parser.add_argument(
+        "--mfma-scale",
+        type=float,
+        # Set to a default of 1 to not scale MFMA cycles
+        default=1,
+        help="Scale how long an mfma consumes the matrix core unit",
+    )
+
+    parser.add_argument(
+        "--hbm-ctrl",
+        action="store_true",
+        default=False,
+        help="Use HBMCtrl",
     )

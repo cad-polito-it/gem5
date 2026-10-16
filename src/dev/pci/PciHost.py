@@ -33,14 +33,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.SimObject import SimObject
+from m5.objects.PciUpstream import PciUpstream
+from m5.objects.Platform import Platform
 from m5.params import *
 from m5.proxy import *
-from m5.objects.Device import PioDevice
-from m5.objects.Platform import Platform
 
 
-class PciHost(PioDevice):
+class PciHost(PciUpstream):
     type = "PciHost"
     cxx_class = "gem5::PciHost"
     cxx_header = "dev/pci/host.hh"
@@ -57,7 +56,7 @@ class GenericPciHost(PciHost):
     conf_base = Param.Addr("Config space base address")
     conf_size = Param.Addr("Config space base address")
     conf_device_bits = Param.UInt8(
-        8, "Number of bits used to as an " "offset a devices address space"
+        8, "Number of bits used to as an offset a devices address space"
     )
 
     pci_pio_base = Param.Addr(0, "Base address for PCI IO accesses")
@@ -76,7 +75,6 @@ class GenericPciHost(PciHost):
         relocatable=0,
         addr=0,
     ):
-
         busf = bus & 0xFF
         devicef = device & 0x1F
         functionf = function & 0x7

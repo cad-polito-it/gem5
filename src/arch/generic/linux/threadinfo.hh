@@ -36,7 +36,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Linux, linux);
 namespace linux
 {
 
@@ -61,7 +60,7 @@ class ThreadInfo
             return false;
         }
 
-        data = TranslatingPortProxy(tc).read<T>(it->address, byteOrder);
+        data = TranslatingPortProxy(tc).read<T>(it->address(), byteOrder);
 
         return true;
     }
@@ -160,9 +159,10 @@ class ThreadInfo
         if (!get_data("task_struct_comm_size", size))
             return "FailureIn_curTaskName";
 
-        char buffer[size + 1];
+        std::string buffer;
+        buffer.reserve(size + 1);
         TranslatingPortProxy(tc).readString(
-                buffer, task_struct + offset, size);
+                buffer.data(), task_struct + offset, size);
 
         return buffer;
     }

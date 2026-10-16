@@ -33,18 +33,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import gzip
 import argparse
+import gzip
 import os
 
 import m5
 from m5.objects import *
-from m5.util import addToPath
 from m5.stats import periodicStatDump
+from m5.util import addToPath
 
 addToPath("../")
-from common import ObjectList
-from common import MemConfig
+from common import (
+    MemConfig,
+    ObjectList,
+)
 
 addToPath("../../util")
 import protolib
@@ -96,7 +98,7 @@ parser.add_argument(
     "--mem-size",
     action="store",
     type=str,
-    default="16MB",
+    default="16MiB",
     help="Specify the memory size",
 )
 parser.add_argument(
@@ -150,6 +152,7 @@ cfg_file = open(cfg_file_name, "w")
 burst_size = 64
 system.cache_line_size = burst_size
 
+
 # lazy version to check if an integer is a power of two
 def is_pow2(num):
     return num != 0 and ((num & (num - 1)) == 0)
@@ -158,7 +161,7 @@ def is_pow2(num):
 # assume we start every range at 0
 max_range = int(mem_range.end)
 
-# start at a size of 4 kByte, and go up till we hit the max, increase
+# start at a size of 4 kibibyte, and go up till we hit the max, increase
 # the step every time we hit a power of two
 min_range = 4096
 ranges = [min_range]
@@ -177,13 +180,14 @@ iterations = 2
 # do not pile up in the system, adjust if needed
 itt = 150 * 1000
 
+
 # for every data point, we create a trace containing a random address
 # sequence, so that we can play back the same sequence for warming and
 # the actual measurement
 def create_trace(filename, max_addr, burst_size, itt):
     try:
         proto_out = gzip.open(filename, "wb")
-    except IOError:
+    except OSError:
         print("Failed to open ", filename, " for writing")
         exit(-1)
 
@@ -276,6 +280,7 @@ system.tgen.port = system.monitor.cpu_side_port
 # basic to explore some of the options
 from common.Caches import *
 
+
 # a starting point for an L3 cache
 class L3Cache(Cache):
     assoc = 16
@@ -290,17 +295,17 @@ class L3Cache(Cache):
 
 # note that everything is in the same clock domain, 2.0 GHz as
 # specified above
-system.l1cache = L1_DCache(size="64kB")
+system.l1cache = L1_DCache(size="64KiB")
 system.monitor.mem_side_port = system.l1cache.cpu_side
 
-system.l2cache = L2Cache(size="512kB", writeback_clean=True)
+system.l2cache = L2Cache(size="512KiB", writeback_clean=True)
 system.l2cache.xbar = L2XBar()
 system.l1cache.mem_side = system.l2cache.xbar.cpu_side_ports
 system.l2cache.cpu_side = system.l2cache.xbar.mem_side_ports
 
 # make the L3 mostly exclusive, and correspondingly ensure that the L2
 # writes back also clean lines to the L3
-system.l3cache = L3Cache(size="4MB", clusivity="mostly_excl")
+system.l3cache = L3Cache(size="4MiB", clusivity="mostly_excl")
 system.l3cache.xbar = L2XBar()
 system.l2cache.mem_side = system.l3cache.xbar.cpu_side_ports
 system.l3cache.cpu_side = system.l3cache.xbar.mem_side_ports

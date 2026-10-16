@@ -36,6 +36,7 @@
 #include <string>
 
 #include "gpu-compute/misc.hh"
+#include "mem/request.hh"
 #include "params/ComputeUnit.hh"
 #include "sim/stats.hh"
 
@@ -67,6 +68,9 @@ class ScalarMemPipeline
 
     void issueRequest(GPUDynInstPtr gpuDynInst);
 
+    void injectScalarMemFence(
+            GPUDynInstPtr gpuDynInst, bool kernelMemSync, RequestPtr req);
+
     bool
     isGMLdRespFIFOWrRdy() const
     {
@@ -86,6 +90,8 @@ class ScalarMemPipeline
     }
 
     const std::string& name() const { return _name; }
+
+    void printProgress();
 
   private:
     ComputeUnit &computeUnit;

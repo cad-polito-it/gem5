@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2025 Arm Limited
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright 2019 Google, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,7 +47,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(FastModel, fastmodel);
 namespace fastmodel
 {
 
@@ -167,7 +178,7 @@ CortexA76TC::setCCRegFlat(RegIndex idx, RegVal val)
         break;
       case ArmISA::cc_reg::Fp:
         {
-            ArmISA::FPSCR fpscr = readMiscRegNoEffect(ArmISA::MISCREG_FPSCR);
+            ArmISA::FPSCR fpscr = readMiscReg(ArmISA::MISCREG_FPSCR);
             val = insertBits(fpscr, 31, 28, val);
         }
         break;
@@ -229,7 +240,7 @@ Iris::ThreadContext::IdxNameMap CortexA76TC::miscRegIdxNameMap({
         // ArmISA::MISCREG_SCTLR_RST?
         { ArmISA::MISCREG_SEV_MAILBOX, "SEV_STATE" },
 
-        // AArch32 CP14 registers (debug/trace/ThumbEE/Jazelle control)
+        // AArch32 CP14 registers (debug/trace control)
         // ArmISA::MISCREG_DBGDIDR?
         // ArmISA::MISCREG_DBGDSCRint?
         // ArmISA::MISCREG_DBGDCCINT?

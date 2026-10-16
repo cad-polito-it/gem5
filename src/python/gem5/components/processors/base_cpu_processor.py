@@ -25,23 +25,24 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-from .base_cpu_core import BaseCPUCore
-from ..boards.mem_mode import MemMode
-from ...utils.override import overrides
-from ..boards.mem_mode import MemMode
-from .abstract_processor import AbstractProcessor
-from ..boards.abstract_board import AbstractBoard
-
 from typing import List
 
-from m5.util import warn
+import m5
 from m5.objects import (
-    BaseO3CPU,
-    BaseMinorCPU,
     BaseAtomicSimpleCPU,
+    BaseMinorCPU,
     BaseNonCachingSimpleCPU,
+    BaseO3CPU,
     BaseTimingSimpleCPU,
+    Root,
 )
+from m5.util import warn
+
+from ...utils.override import overrides
+from ..boards.abstract_board import AbstractBoard
+from ..boards.mem_mode import MemMode
+from .abstract_processor import AbstractProcessor
+from .base_cpu_core import BaseCPUCore
 
 
 class BaseCPUProcessor(AbstractProcessor):
@@ -56,7 +57,6 @@ class BaseCPUProcessor(AbstractProcessor):
 
     Disclaimer
     ----------
-
     Multiple cores comprising of different BaseCPU types has not been tested
     and is not officially supported.
     """
@@ -71,7 +71,6 @@ class BaseCPUProcessor(AbstractProcessor):
 
     @overrides(AbstractProcessor)
     def incorporate_processor(self, board: AbstractBoard) -> None:
-
         if any(core.is_kvm_core() for core in self.get_cores()):
             board.kvm_vm = self.kvm_vm
             # To get the KVM CPUs to run on different host CPUs
@@ -97,7 +96,14 @@ class BaseCPUProcessor(AbstractProcessor):
                     "'atomic_noncaching' memory mode. This will skip caching "
                     "completely."
                 )
+                board.set_mem_mode(MemMode.ATOMIC_NONCACHING)
             else:
                 board.set_mem_mode(MemMode.ATOMIC)
         else:
             raise NotImplementedError
+
+    def _pre_instantiate(self, root: Root) -> None:
+        super()._pre_instantiate(root)
+        if any(core.is_kvm_core() for core in self.get_cores()):
+            m5.ticks.fixGlobalFrequency()
+            root.sim_quantum = m5.ticks.fromSeconds(0.001)

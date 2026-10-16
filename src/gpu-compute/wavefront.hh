@@ -36,6 +36,7 @@
 #include <deque>
 #include <list>
 #include <memory>
+#include <set>
 #include <unordered_map>
 #include <vector>
 
@@ -92,6 +93,8 @@ class Wavefront : public SimObject
         S_BARRIER
     };
 
+    // gfx version wavefront is executing
+    GfxVersion gfxVersion;
     // HW slot id where the WF is mapped to inside a SIMD unit
     const int wfSlotId;
     int kernId;
@@ -131,10 +134,13 @@ class Wavefront : public SimObject
     uint32_t maxVgprs;
     // number of SGPRs required by WF
     uint32_t maxSgprs;
+    // first accumulation vgpr number
+    uint32_t accumOffset;
     void freeResources();
     GPUDynInstPtr nextInstr();
     void setStatus(status_e newStatus);
     status_e getStatus() { return status; }
+    std::string statusToString(status_e status);
     void resizeRegFiles(int num_vregs, int num_sregs);
     bool isGmInstruction(GPUDynInstPtr ii);
     bool isLmInstruction(GPUDynInstPtr ii);
@@ -200,6 +206,9 @@ class Wavefront : public SimObject
     // Index into the Scalar Register File's namespace where the WF's registers
     // will live while the WF is executed
     uint32_t startSgprIndex;
+
+    // Architected flat scratch address for MI300+
+    Addr archFlatScratchAddr = 0;
 
     // Old value of destination gpr (for trace)
     std::vector<uint32_t> oldVgpr;
@@ -279,6 +288,21 @@ class Wavefront : public SimObject
     void decExpInstsIssued();
     void decLGKMInstsIssued();
 
+    std::set<InstSeqNum> vmemIssued;
+    std::set<InstSeqNum> lgkmIssued;
+    std::set<InstSeqNum> expIssued;
+    std::unordered_map<InstSeqNum, std::string> cntInsts;
+
+    void trackVMemInst(GPUDynInstPtr gpu_dyn_inst);
+    void trackLGKMInst(GPUDynInstPtr gpu_dyn_inst);
+    void trackExpInst(GPUDynInstPtr gpu_dyn_inst);
+    void trackInst(GPUDynInstPtr gpu_dyn_inst);
+
+    void untrackVMemInst(GPUDynInstPtr gpu_dyn_inst);
+    void untrackLGKMInst(GPUDynInstPtr gpu_dyn_inst);
+    void untrackExpInst(GPUDynInstPtr gpu_dyn_inst);
+    void untrackInst(InstSeqNum seqNum);
+
     /** Freeing VRF space */
     void freeRegisterFile();
 
@@ -295,6 +319,23 @@ class Wavefront : public SimObject
     int barrierId() const;
     bool hasBarrier() const;
     void releaseBarrier();
+
+    // For periodic progress prints
+    void printProgress();
+
+    // Tracking variables for periodic progress
+    InstSeqNum lastInstSeqNum;
+    std::string lastInstDisasm;
+    std::string lastInstRdyStatus;
+    bool lastVrfStatus, lastSrfStatus;
+
+    // For MI355X MFMA instructions using scale the value must be reprogrammed
+    // before each scaling MFMA instruction. To enforce this, use getters /
+    // setters and clear the value when the MFMA instruction gets the value.
+    void setMfmaAScale(int idx, uint8_t value);
+    void setMfmaBScale(int idx, uint8_t value);
+    uint8_t getMfmaAScale(int idx);
+    uint8_t getMfmaBScale(int idx);
 
   private:
     TheGpuISA::GPUISA _gpuISA;
@@ -329,6 +370,12 @@ class Wavefront : public SimObject
     Addr _pc;
     VectorMask _execMask;
     int barId;
+
+    // For MI355X MFMAs, some instructions take a scale value set by a
+    // previous instruction. Store these in the wavefront since that is
+    // accessible from the instruction execute method.
+    std::array<uint8_t, VegaISA::NumVecElemPerVecReg> mfmaAScale;
+    std::array<uint8_t, VegaISA::NumVecElemPerVecReg> mfmaBScale;
 
   public:
     struct WavefrontStats : public statistics::Group

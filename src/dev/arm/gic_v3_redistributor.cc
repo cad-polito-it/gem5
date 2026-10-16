@@ -377,8 +377,8 @@ Gicv3Redistributor::read(Addr addr, size_t size, bool is_secure_access)
         return 0;
 
       default:
-        panic("Gicv3Redistributor::read(): invalid offset %#x\n", addr);
-        break;
+        gic->reserved("Gicv3Redistributor::read(): invalid offset %#x\n", addr);
+        return 0; // RES0
     }
 }
 
@@ -620,7 +620,7 @@ Gicv3Redistributor::write(Addr addr, uint64_t data, size_t size,
                       continue;
                   }
 
-                  irqGrpmod[int_id] = data & (1 << int_id);
+                  irqGrpmod[int_id] = bits(data, int_id);
               }
           }
 
@@ -704,7 +704,7 @@ Gicv3Redistributor::write(Addr addr, uint64_t data, size_t size,
       }
 
       default:
-        panic("Gicv3Redistributor::write(): invalid offset %#x\n", addr);
+        gic->reserved("Gicv3Redistributor::write(): invalid offset %#x\n", addr);
         break;
     }
 }
@@ -830,17 +830,17 @@ Gicv3Redistributor::update()
 
         const uint32_t largest_lpi_id = 1 << (lpiIDBits + 1);
         const uint32_t number_lpis = largest_lpi_id - SMALLEST_LPI_ID + 1;
-
-        uint8_t lpi_pending_table[largest_lpi_id / 8];
-        uint8_t lpi_config_table[number_lpis];
+        const size_t table_size = largest_lpi_id / 8;
+        auto lpi_pending_table = std::make_unique<uint8_t[]>(table_size);
+        auto lpi_config_table = std::make_unique<uint8_t[]>(number_lpis);
 
         memProxy->readBlob(lpiPendingTablePtr,
-                           lpi_pending_table,
-                           sizeof(lpi_pending_table));
+                           lpi_pending_table.get(),
+                           table_size);
 
         memProxy->readBlob(lpiConfigurationTablePtr,
-                           lpi_config_table,
-                           sizeof(lpi_config_table));
+                           lpi_config_table.get(),
+                           number_lpis);
 
         for (int lpi_id = SMALLEST_LPI_ID; lpi_id < largest_lpi_id;
              lpi_id++) {

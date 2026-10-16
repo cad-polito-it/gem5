@@ -32,6 +32,7 @@
 
 #include "cpu/base.hh"
 #include "cpu/thread_context.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -42,24 +43,28 @@ namespace PowerISA
 void
 UnimplementedOpcodeFault::invoke(ThreadContext *tc, const StaticInstPtr &inst)
 {
-    panic_if(tc->getSystemPtr()->trapToGdb(SIGILL, tc->contextId()),
-             "Unimplemented opcode encountered at virtual address %#x\n",
-             tc->pcState().instAddr());
+    if (! tc->getSystemPtr()->trapToGdb(GDBSignal::ILL, tc->contextId()) ) {
+        panic("Unimplemented opcode encountered at virtual address %#x\n",
+              tc->pcState().instAddr());
+    }
 }
 
 void
 AlignmentFault::invoke(ThreadContext *tc, const StaticInstPtr &inst)
 {
-    panic_if(!tc->getSystemPtr()->trapToGdb(SIGBUS, tc->contextId()),
-             "Alignment fault when accessing virtual address %#x\n", vaddr);
+    if (! tc->getSystemPtr()->trapToGdb(GDBSignal::BUS, tc->contextId()) ) {
+        panic("Alignment fault when accessing virtual address %#x\n",
+              vaddr);
+    }
 }
 
 void
 TrapFault::invoke(ThreadContext *tc, const StaticInstPtr &inst)
 {
-    panic_if(tc->getSystemPtr()->trapToGdb(SIGTRAP, tc->contextId()),
-             "Trap encountered at virtual address %#x\n",
-             tc->pcState().instAddr());
+    if (! tc->getSystemPtr()->trapToGdb(GDBSignal::TRAP, tc->contextId()) ) {
+        panic("Trap encountered at virtual address %#x\n",
+              tc->pcState().instAddr());
+    }
 }
 
 } // namespace PowerISA

@@ -24,13 +24,29 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from abc import ABCMeta, abstractmethod
-from typing import Tuple, Sequence, List
+from abc import (
+    ABCMeta,
+    abstractmethod,
+)
+from typing import (
+    List,
+    Sequence,
+    Tuple,
+)
 
+from m5.objects import (
+    AbstractMemory,
+    MemCtrl,
+    MemInterface,
+    Root,
+    SubSystem,
+)
+from m5.params import (
+    AddrRange,
+    Port,
+)
 
 from ..boards.abstract_board import AbstractBoard
-
-from m5.objects import AddrRange, Port, SubSystem, MemCtrl
 
 
 class AbstractMemorySystem(SubSystem):
@@ -38,6 +54,18 @@ class AbstractMemorySystem(SubSystem):
 
     def __init__(self) -> None:
         super().__init__()
+
+    def _pre_instantiate(self, root: Root) -> None:
+        """Called in the `AbstractBoard`'s `_pre_instantiate` method. This is
+        called after `connect_things`, after the creation of the root object
+        (which is passed in as an argument), but before `m5.instantiate`).
+
+        Subclasses should override this method to set up any connections.
+
+        At present there is no general task that must be specified here and is
+        default or applicable to all memory systems.
+        """
+        pass
 
     @abstractmethod
     def incorporate_memory(self, board: AbstractBoard) -> None:
@@ -47,22 +75,34 @@ class AbstractMemorySystem(SubSystem):
 
     @abstractmethod
     def get_mem_ports(self) -> Sequence[Tuple[AddrRange, Port]]:
-        """Get the ports to connect this memory system to the cache"""
+        """Get the ports to connect this memory system to the cache."""
         raise NotImplementedError
 
     @abstractmethod
     def get_memory_controllers(self) -> List[MemCtrl]:
-        """Get all of the memory controllers in this memory system"""
+        """Get all of the memory controllers in this memory system.
+
+        The "memory controller" is the object that has a port named "port"
+        that is the CPU-side port for the memory."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_mem_interfaces(self) -> List[AbstractMemory]:
+        """Get all memory interfaces in this memory system.
+        Useful when creating physical memory objects.
+
+        The "mem interface" is the object that is an AbstractMemory and
+        is used to create the backing store."""
         raise NotImplementedError
 
     @abstractmethod
     def get_size(self) -> int:
-        """Returns the total size of the memory system"""
+        """Returns the total size of the memory system."""
         raise NotImplementedError
 
     @abstractmethod
     def set_memory_range(self, ranges: List[AddrRange]) -> None:
-        """Set the total range for this memory system
+        """Set the total range for this memory system.
 
         May pass multiple non-overlapping ranges. The total size of the ranges
         should match the size of the memory.
@@ -72,6 +112,14 @@ class AbstractMemorySystem(SubSystem):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def get_uninterleaved_range(self) -> List[AddrRange]:
+        """Returns the range of the memory system without interleaving.
+        This is useful when other components in the system want to interleave
+        the memory range different to how the memory has interleaved them.
+        """
+        raise NotImplementedError
+
     def _post_instantiate(self) -> None:
-        """Called to set up anything needed after m5.instantiate"""
+        """Called to set up anything needed after ``m5.instantiate``."""
         pass

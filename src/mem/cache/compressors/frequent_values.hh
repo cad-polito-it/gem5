@@ -34,12 +34,13 @@
 #include <memory>
 #include <vector>
 
+#include "base/cache/associative_cache.hh"
 #include "base/sat_counter.hh"
 #include "base/types.hh"
 #include "mem/cache/base.hh"
+#include "mem/cache/cache_probe_arg.hh"
 #include "mem/cache/compressors/base.hh"
 #include "mem/cache/compressors/encoders/huffman.hh"
-#include "mem/cache/prefetch/associative_set.hh"
 #include "sim/eventq.hh"
 #include "sim/probe/probe.hh"
 
@@ -48,7 +49,6 @@ namespace gem5
 
 struct FrequentValuesCompressorParams;
 
-GEM5_DEPRECATED_NAMESPACE(Compressor, compression);
 namespace compression
 {
 
@@ -64,7 +64,7 @@ class FrequentValues : public Base
   private:
     class CompData;
 
-    using DataUpdate = BaseCache::DataUpdate;
+    using DataUpdate = CacheDataUpdateProbeArg;
 
     class FrequentValuesListener : public ProbeListenerArgBase<DataUpdate>
     {
@@ -72,14 +72,14 @@ class FrequentValues : public Base
         FrequentValues &parent;
 
       public:
-        FrequentValuesListener(FrequentValues &_parent, ProbeManager *pm,
-            const std::string &name)
-          : ProbeListenerArgBase(pm, name), parent(_parent)
+        FrequentValuesListener(FrequentValues &_parent, std::string name)
+            : ProbeListenerArgBase(std::move(name)), parent(_parent)
         {
         }
         void notify(const DataUpdate &data_update) override;
     };
-    std::vector<FrequentValuesListener*> listeners;
+
+    std::vector<ProbeListenerPtr<FrequentValuesListener>> listeners;
 
     /** Whether Huffman encoding is applied to the VFT indices. */
     const bool useHuffmanEncoding;
@@ -112,7 +112,7 @@ class FrequentValues : public Base
     enum Phase {SAMPLING, CODE_GENERATION, COMPRESSING};
     Phase phase;
 
-    class VFTEntry : public TaggedEntry
+    class VFTEntry : public CacheEntry
     {
       public:
         /**
@@ -129,15 +129,15 @@ class FrequentValues : public Base
          */
         SatCounter32 counter;
 
-        VFTEntry(std::size_t num_bits)
-          : TaggedEntry(), value(0), counter(num_bits)
+        VFTEntry(std::size_t num_bits, TagExtractor ext)
+          : CacheEntry(ext), value(0), counter(num_bits)
         {
         }
 
         void
         invalidate() override
         {
-            TaggedEntry::invalidate();
+            CacheEntry::invalidate();
             value = 0;
             counter.reset();
         }
@@ -147,7 +147,7 @@ class FrequentValues : public Base
      * The Value Frequency Table, a small cache that keeps track and estimates
      * the frequency distribution of values in the cache.
      */
-    AssociativeSet<VFTEntry> VFT;
+    AssociativeCache<VFTEntry> VFT;
 
     /**
      * A pseudo value is used as the representation of uncompressed values.

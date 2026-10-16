@@ -1,3 +1,15 @@
+# Copyright (c) 2025 Arm Limited
+# All rights reserved.
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
 # Copyright (c) 2022 The Regents of the University of California
 # All rights reserved.
 #
@@ -24,16 +36,27 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from typing import Optional, List
-from ...utils.requires import requires
-from .abstract_core import AbstractCore
+from typing import (
+    List,
+    Optional,
+)
+
+from m5.objects import (
+    BaseCPU,
+    BaseMMU,
+    PcCountTracker,
+    PcCountTrackerManager,
+    Process,
+)
+from m5.params import (
+    PcCountPair,
+    Port,
+)
 
 from ...isas import ISA
-from ...runtime import get_runtime_isa
 from ...utils.override import overrides
 from ...utils.requires import requires
-
-from m5.objects import BaseMMU, Port, BaseCPU, Process
+from .abstract_core import AbstractCore
 
 
 class BaseCPUCore(AbstractCore):
@@ -41,17 +64,19 @@ class BaseCPUCore(AbstractCore):
     An stdlib AbstractCore subclass which wraps a BaseCPU SimObject type.
     """
 
-    def __init__(self, core: BaseCPU, isa: Optional[ISA] = None):
+    def __init__(self, core: BaseCPU, isa: ISA):
         super().__init__()
 
         # There is some annoying redundancy here. The BaseCPU type already
         # defines the ISA, so here we are defining it twice. However, there
         # currently isn't a good way to get the ISA from the BaseCPU Type.
-        if isa:
-            requires(isa_required=isa)
-            self._isa = isa
-        else:
-            self._isa = get_runtime_isa()
+        #
+        # TODO: Have some helper function to get the ISA from a BaseCPU type.
+        # This may just be a cause of using `instanceof`:
+        # e.g., `if instanceof(cpu, X86Cpu): return ISA.X86`.
+        #
+        requires(isa_required=isa)
+        self._isa = isa
 
         self.core = core
         self.core.createThreads()
@@ -85,7 +110,6 @@ class BaseCPUCore(AbstractCore):
 
     @overrides(AbstractCore)
     def is_kvm_core(self) -> bool:
-
         try:
             from m5.objects import BaseKvmCPU
 
@@ -109,18 +133,7 @@ class BaseCPUCore(AbstractCore):
 
     @overrides(AbstractCore)
     def connect_walker_ports(self, port1: Port, port2: Port) -> None:
-        if self.get_isa() == ISA.ARM:
-
-            # Unlike X86 and RISCV MMU, the ARM MMU has two L1 TLB walker ports
-            # named `walker` and `stage2_walker` for both data and instruction.
-            # The gem5 standard library currently supports one TLB walker port
-            # per cache level. Therefore, we are explicitly setting the walker
-            # ports and not setting the stage2_walker ports for ARM systems.
-
-            self.core.mmu.itb_walker.port = port1
-            self.core.mmu.dtb_walker.port = port2
-        else:
-            self.core.mmu.connectWalkerPorts(port1, port2)
+        self.core.mmu.connectWalkerPorts(port1, port2)
 
     @overrides(AbstractCore)
     def set_workload(self, process: Process) -> None:
@@ -136,7 +149,6 @@ class BaseCPUCore(AbstractCore):
         interrupt_requestor: Optional[Port] = None,
         interrupt_responce: Optional[Port] = None,
     ) -> None:
-
         # TODO: This model assumes that we will only create an interrupt
         # controller as we require it. Not sure how true this is in all cases.
         self.core.createInterruptController()
@@ -169,3 +181,17 @@ class BaseCPUCore(AbstractCore):
             self.core.scheduleInstStopAnyThread(inst)
         else:
             self.core.max_insts_any_thread = inst
+
+    @overrides(AbstractCore)
+    def add_pc_tracker_probe(
+        self, target_pair: List[PcCountPair], manager: PcCountTrackerManager
+    ) -> None:
+        pair_tracker = PcCountTracker()
+        pair_tracker.targets = target_pair
+        pair_tracker.core = self.core
+        pair_tracker.ptmanager = manager
+        self.core.probeListener = pair_tracker
+
+    @overrides(AbstractCore)
+    def get_total_instructions(self) -> int:
+        return self.core.totalInsts()

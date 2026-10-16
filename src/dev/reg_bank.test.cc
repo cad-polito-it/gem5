@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020 ARM Limited
+ * Copyright (c) 2020, 2024 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -55,6 +55,7 @@
 
 #include <vector>
 
+#include "base/gtest/logging.hh"
 #include "dev/reg_bank.hh"
 
 using namespace gem5;
@@ -63,6 +64,9 @@ using namespace gem5;
 using testing::ElementsAre;
 // This version is needed with enough elements, empirically more than 10.
 using testing::ElementsAreArray;
+
+using testing::AllOf;
+using testing::HasSubstr;
 
 
 /*
@@ -864,6 +868,78 @@ TEST_F(TypedRegisterTest, PartialWriterReaderWriter)
     EXPECT_EQ(write_value, 0x0344);
 }
 
+// Use the default resetter for a register.
+TEST_F(TypedRegisterTest, DefaultResetter)
+{
+    BackingType initial_value = reg.get();
+
+    reg.get() = initial_value + 1;
+    EXPECT_EQ(reg.get(), initial_value + 1);
+
+    reg.reset();
+
+    EXPECT_EQ(reg.get(), initial_value);
+}
+
+// Set initial value later than constructor
+TEST_F(TypedRegisterTest, LateInitialValueAssignment)
+{
+    BackingType initial_value = reg.get();
+    BackingType new_initial_value = initial_value + 1;
+
+    reg.get() = new_initial_value;
+    reg.resetInitialValue();
+
+    EXPECT_EQ(reg.get(), new_initial_value);
+    EXPECT_EQ(reg.initialValue(), new_initial_value);
+
+    reg.get() = new_initial_value + 1;
+    EXPECT_EQ(reg.get(), new_initial_value + 1);
+    EXPECT_EQ(reg.initialValue(), new_initial_value);
+
+    reg.reset();
+
+    EXPECT_EQ(reg.get(), new_initial_value);
+    EXPECT_EQ(reg.initialValue(), new_initial_value);
+}
+
+// Set a custom resetter for a register.
+TEST_F(TypedRegisterTest, Resetter)
+{
+    RegisterBankLE::Register<BackingType> *reg_ptr = nullptr;
+
+    reg.resetter([&reg_ptr](auto &r) {
+        reg_ptr = &r;
+    });
+
+    reg.reset();
+
+    EXPECT_EQ(reg_ptr, &reg);
+}
+
+// Set a custom resetter for a register which is a class method.
+TEST_F(TypedRegisterTest, ResetterMF)
+{
+    using Reg = RegisterBankLE::Register<BackingType>;
+
+    struct ResetStruct
+    {
+        Reg *reg_ptr = nullptr;
+
+        void
+        resetter(Reg &r)
+        {
+            reg_ptr = &r;
+        }
+    } reset_struct;
+
+    reg.resetter(&reset_struct, &ResetStruct::resetter);
+
+    reg.reset();
+
+    EXPECT_EQ(reset_struct.reg_ptr, &reg);
+}
+
 TEST_F(TypedRegisterTest, Serialize)
 {
     std::ostringstream os;
@@ -1009,6 +1085,128 @@ TEST_F(RegisterBankTest, AddRegistersSize)
     EXPECT_EQ(emptyBank.size(), 4);
     emptyBank.addRegisters({reg1, reg2});
     EXPECT_EQ(emptyBank.size(), 12);
+}
+
+TEST_F(RegisterBankTest, AddRegistersWithOffsetChecks)
+{
+    emptyBank.addRegister({0x12345});
+    EXPECT_EQ(emptyBank.size(), 0);
+    emptyBank.addRegister({0x12345, reg0});
+    EXPECT_EQ(emptyBank.size(), 4);
+    emptyBank.addRegister({0x12349});
+    EXPECT_EQ(emptyBank.size(), 4);
+
+    emptyBank.addRegisters({{0x12349, reg1}, {0x1234d}, {0x1234d, reg2}});
+    EXPECT_EQ(emptyBank.size(), 12);
+}
+
+/**
+ * This test is using addRegistersAt method to store
+ * overlapping registers to the empty bank. This should not
+ * be permitted and the method should panic
+ *
+ *            [  reg2  ]
+ *       [  reg1  ]    |
+ *  [  reg0  ]    |    |
+ *  |        |    |    |
+ * 0x0      0x4  0x6  0x8
+ */
+TEST_F(RegisterBankTest, AddRegistersAtOffsetDeath)
+{
+    gtestLogOutput.str("");
+
+    auto base = emptyBank.base();
+    EXPECT_ANY_THROW(
+        emptyBank.addRegistersAt<RegisterBankLE::RegisterRao>(
+            {{base + 0x0, reg0},
+             {base + 0x2, reg1},
+             {base + 0x4, reg2}}));
+
+    std::string actual = gtestLogOutput.str();
+    EXPECT_THAT(actual, HasSubstr("Overlapping register"));
+    EXPECT_THAT(actual, HasSubstr("reg1"));
+}
+
+/**
+ * This test is using addRegistersAt method to store
+ * contiguous registers to the empty bank, similarly
+ * to what we would do when relying on addRegisters.
+ * The test will check size is updated consistently
+ * with the latter method
+ *
+ *  [  reg0  ][  reg1  ][  reg2  ]
+ *  |         |         |        |
+ * 0x0       0x4       0x8      0xc
+ */
+TEST_F(RegisterBankTest, AddRegistersAtOffsetContiguous)
+{
+    auto base = emptyBank.base();
+    EXPECT_EQ(emptyBank.size(), 0);
+    emptyBank.addRegistersAt<RegisterBankLE::RegisterRao>(
+        {{base + 0x0, reg0},
+         {base + 0x4, reg1},
+         {base + 0x8, reg2}});
+    EXPECT_EQ(emptyBank.size(), 0xc);
+}
+
+/**
+ * This test is using addRegistersAt method to store
+ * non-contiguous registers to the empty bank.
+ * As the RegisterRao data type is passed as a template
+ * argument, the gaps between the registers are filled
+ * with rao registers.
+ * We check raos are correctly inserted
+ *
+ *  [reg0][rao0][reg1][rao1][reg2]
+ *  |           |           |    |
+ * 0x0         0x8         0x10 0x14
+ */
+TEST_F(RegisterBankTest, AddRegistersAtOffsetSparse)
+{
+    auto base = emptyBank.base();
+    EXPECT_EQ(emptyBank.size(), 0);
+    emptyBank.addRegistersAt<RegisterBankLE::RegisterRao>(
+        {{base + 0x0, reg0},
+         {base + 0x8, reg1},
+         {base + 0x10, reg2}});
+    EXPECT_EQ(emptyBank.size(), 0x14);
+
+    emptyBank.read(base + 0x0, buf.data(), 4);
+    EXPECT_EQ(reg0.get(), *reinterpret_cast<uint32_t*>(buf.data()));
+
+    emptyBank.read(base + 0x4, buf.data(), 4);
+    EXPECT_EQ(0xffffffff, *reinterpret_cast<uint32_t*>(buf.data()));
+
+    emptyBank.read(base + 0x8, buf.data(), 4);
+    EXPECT_EQ(reg1.get(), *reinterpret_cast<uint32_t*>(buf.data()));
+
+    emptyBank.read(base + 0xc, buf.data(), 4);
+    EXPECT_EQ(0xffffffff, *reinterpret_cast<uint32_t*>(buf.data()));
+
+    emptyBank.read(base + 0x10, buf.data(), 4);
+    EXPECT_EQ(reg2.get(), *reinterpret_cast<uint32_t*>(buf.data()));
+}
+
+TEST_F(RegisterBankTest, BadRegisterOffsetDeath)
+{
+    gtestLogOutput.str("");
+    EXPECT_ANY_THROW(emptyBank.addRegisters({{0xabcd, reg0}, reg1}));
+
+    std::string actual = gtestLogOutput.str();
+    EXPECT_THAT(actual, HasSubstr("empty.reg0"));
+    EXPECT_THAT(actual, HasSubstr("to be 0xabcd"));
+    EXPECT_THAT(actual, HasSubstr("is 0x12345"));
+}
+
+TEST_F(RegisterBankTest, BadBankOffsetDeath)
+{
+    gtestLogOutput.str("");
+    EXPECT_ANY_THROW(emptyBank.addRegisters({{0xabcd}, reg0}));
+
+    std::string actual = gtestLogOutput.str();
+    EXPECT_THAT(actual, HasSubstr("empty "));
+    EXPECT_THAT(actual, HasSubstr("to be 0xabcd"));
+    EXPECT_THAT(actual, HasSubstr("is 0x12345"));
 }
 
 // Reads.
@@ -1306,4 +1504,60 @@ TEST_F(RegisterBankTest, WriteFullPartial)
                 Access(Write, 0xf3f2aa99, 0, 0, 0),
                 Access(PartialWrite, 0x0000aa99, 15, 0, 0)
                 ));
+}
+
+
+/*
+ * VectorRegisterBank test
+ */
+
+class VectorRegisterBankTest : public testing::Test
+{
+  protected:
+    using Register = RegisterBankLE::Register32LE;
+
+    static constexpr size_t BankSize = 3;
+    static constexpr size_t BankOffset = 8;
+    const std::string BankName = "bank";
+    static constexpr Addr BankBase = 0x10000;
+
+    Register reg0, reg1, reg2;
+    std::vector<RegisterBankLE> bank;
+
+    VectorRegisterBankTest() :
+        reg0("reg0", 0xd3d2d1d0), reg1("reg1", 0xe3e2e1e0),
+        reg2("reg2", 0xf3f2f1f0)
+    {
+        bank.reserve(BankSize);
+        for (int i = 0; i < BankSize; i++) {
+            bank.emplace_back(
+                BankName + std::to_string(i), BankBase + i * BankOffset);
+        }
+        bank[0].addRegister(reg0);
+        bank[1].addRegister(reg1);
+        bank[2].addRegister(reg2);
+    }
+};
+
+TEST_F(VectorRegisterBankTest, CheckVectorRegisterBankSize)
+{
+    EXPECT_EQ(bank.size(), 3);
+}
+
+TEST_F(VectorRegisterBankTest, CheckVectorRegisterBankName)
+{
+    EXPECT_EQ(bank[0].name(), BankName + std::to_string(0));
+    EXPECT_EQ(bank[1].name(), BankName + std::to_string(1));
+    EXPECT_EQ(bank[2].name(), BankName + std::to_string(2));
+}
+
+TEST_F(VectorRegisterBankTest, GetVectorRegisterBankData)
+{
+    uint32_t val0, val1, val2;
+    bank[0].read(BankBase, &val0, 4);
+    EXPECT_EQ(val0, reg0.get());
+    bank[1].read(BankBase + 1 * BankOffset, &val1, 4);
+    EXPECT_EQ(val1, reg1.get());
+    bank[2].read(BankBase + 2 * BankOffset, &val2, 4);
+    EXPECT_EQ(val2, reg2.get());
 }

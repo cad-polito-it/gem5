@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013, 2015, 2019-2021 Arm Limited
+ * Copyright (c) 2012-2013, 2015, 2019-2021, 2023-2024 Arm Limited
  * Copyright (c) 2015 Advanced Micro Devices, Inc.
  * All rights reserved
  *
@@ -57,8 +57,10 @@
 /// application on the host machine.
 
 #if defined(__linux__)
+#include <linux/kdev_t.h>
 #include <sched.h>
 #include <sys/eventfd.h>
+#include <sys/sendfile.h>
 #include <sys/statfs.h>
 
 #else
@@ -108,6 +110,7 @@
 #include "sim/syscall_desc.hh"
 #include "sim/syscall_emul_buf.hh"
 #include "sim/syscall_return.hh"
+#include "sim/system.hh"
 
 #if defined(__APPLE__) && defined(__MACH__) && !defined(CMSG_ALIGN)
 #define CMSG_ALIGN(len) (((len) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
@@ -140,6 +143,10 @@ SyscallReturn ignoreFunc(SyscallDesc *desc, ThreadContext *tc);
 SyscallReturn
 ignoreWarnOnceFunc(SyscallDesc *desc, ThreadContext *tc);
 
+/// Handler for unimplemented syscalls that return -ENOSYS to the target
+/// program.
+SyscallReturn ignoreWithEnosysFunc(SyscallDesc *desc, ThreadContext *tc);
+
 /// Target exit() handler: terminate current context.
 SyscallReturn exitFunc(SyscallDesc *desc, ThreadContext *tc, int status);
 
@@ -148,7 +155,7 @@ SyscallReturn exitGroupFunc(SyscallDesc *desc, ThreadContext *tc, int status);
 
 /// Target set_tid_address() handler.
 SyscallReturn setTidAddressFunc(SyscallDesc *desc, ThreadContext *tc,
-                                uint64_t tidPtr);
+                                VPtr<> tidPtr);
 
 /// Target getpagesize() handler.
 SyscallReturn getpagesizeFunc(SyscallDesc *desc, ThreadContext *tc);
@@ -159,13 +166,9 @@ SyscallReturn brkFunc(SyscallDesc *desc, ThreadContext *tc, VPtr<> new_brk);
 /// Target close() handler.
 SyscallReturn closeFunc(SyscallDesc *desc, ThreadContext *tc, int tgt_fd);
 
-/// Target lseek() handler.
-SyscallReturn lseekFunc(SyscallDesc *desc, ThreadContext *tc,
-                        int tgt_fd, uint64_t offs, int whence);
-
 /// Target _llseek() handler.
 SyscallReturn _llseekFunc(SyscallDesc *desc, ThreadContext *tc,
-                          int tgt_fd, uint64_t offset_high,
+                          int tgt_fd, uint32_t offset_high,
                           uint32_t offset_low, VPtr<> result_ptr, int whence);
 
 /// Target shutdown() handler.
@@ -175,10 +178,6 @@ SyscallReturn shutdownFunc(SyscallDesc *desc, ThreadContext *tc,
 /// Target gethostname() handler.
 SyscallReturn gethostnameFunc(SyscallDesc *desc, ThreadContext *tc,
                               VPtr<> buf_ptr, int name_len);
-
-/// Target getcwd() handler.
-SyscallReturn getcwdFunc(SyscallDesc *desc, ThreadContext *tc,
-                         VPtr<> buf_ptr, unsigned long size);
 
 /// Target unlink() handler.
 SyscallReturn unlinkFunc(SyscallDesc *desc, ThreadContext *tc,
@@ -353,6 +352,10 @@ SyscallReturn getcpuFunc(SyscallDesc *desc, ThreadContext *tc,
 // Target getsockname() handler.
 SyscallReturn getsocknameFunc(SyscallDesc *desc, ThreadContext *tc,
                               int tgt_fd, VPtr<> addrPtr, VPtr<> lenPtr);
+
+// Target sched_getparam() handler.
+SyscallReturn sched_getparamFunc(SyscallDesc *desc, ThreadContext *tc,
+                                 int pid, VPtr<int> paramPtr);
 
 template <class OS>
 SyscallReturn
@@ -677,6 +680,66 @@ copyOutStatfsBuf(TgtStatPtr tgt, HostStatPtr host)
 #endif
 }
 
+template <typename OS, typename TgtStatPtr, typename HostStatPtr>
+void
+copyOutStatxBuf(TgtStatPtr tgt, HostStatPtr host, bool fakeTTY = false)
+{
+    constexpr ByteOrder bo = OS::byteOrder;
+
+    if (fakeTTY) {
+        tgt->stx_dev_major = 0x00;
+        tgt->stx_dev_minor = 0x0A;
+    } else {
+        tgt->stx_dev_major = host->st_dev >> 8;
+        tgt->stx_dev_minor = host->st_dev & 0xFF;
+    }
+    tgt->stx_dev_major = htog(tgt->stx_dev_major, bo);
+    tgt->stx_dev_minor = htog(tgt->stx_dev_minor, bo);
+    tgt->stx_ino = host->st_ino;
+    tgt->stx_ino = htog(tgt->stx_ino, bo);
+    tgt->stx_mode = host->st_mode;
+    if (fakeTTY) {
+      // Claim to be character device.
+      tgt->stx_mode &= ~S_IFMT;
+      tgt->stx_mode |= S_IFCHR;
+    }
+    tgt->stx_mode = htog(tgt->stx_mode, bo);
+    tgt->stx_nlink = host->st_nlink;
+    tgt->stx_nlink = htog(tgt->stx_nlink, bo);
+    tgt->stx_uid = host->st_uid;
+    tgt->stx_uid = htog(tgt->stx_uid, bo);
+    tgt->stx_gid = host->st_gid;
+    tgt->stx_gid = htog(tgt->stx_gid, bo);
+    if (fakeTTY) {
+        tgt->stx_rdev_major = 0x880d >> 8;
+        tgt->stx_rdev_minor = 0x880d & 0xFF;
+    } else {
+        tgt->stx_rdev_major = host->st_rdev >> 8;
+        tgt->stx_rdev_minor = host->st_rdev & 0xFF;
+    }
+    tgt->stx_rdev_major = htog(tgt->stx_rdev_major, bo);
+    tgt->stx_rdev_minor = htog(tgt->stx_rdev_minor, bo);
+    tgt->stx_size = host->st_size;
+    tgt->stx_size = htog(tgt->stx_size, bo);
+    tgt->stx_atimeX = host->st_atime;
+    tgt->stx_atimeX = htog(tgt->stx_atimeX, bo);
+    tgt->stx_ctimeX = host->st_ctime;
+    tgt->stx_ctimeX = htog(tgt->stx_ctimeX, bo);
+    tgt->stx_mtimeX = host->st_mtime;
+    tgt->stx_mtimeX = htog(tgt->stx_mtimeX, bo);
+    // Force the block size to be 8KB. This helps to ensure buffered io works
+    // consistently across different hosts.
+    tgt->stx_blksize = 0x2000;
+    tgt->stx_blksize = htog(tgt->stx_blksize, bo);
+    tgt->stx_blocks = host->st_blocks;
+    tgt->stx_blocks = htog(tgt->stx_blocks, bo);
+    tgt->stx_mask = 0x000007ffU; // STATX_BASIC_STATS on Linux.
+    tgt->stx_mask = htog(tgt->stx_mask, bo);
+    tgt->stx_attributes = 0;
+    tgt->stx_attributes_mask = 0;
+    tgt->stx_attributes_mask = htog(tgt->stx_attributes_mask, bo);
+}
+
 /// Target ioctl() handler.  For the most part, programs call ioctl()
 /// only to find out if their stdout is a tty, to determine whether to
 /// do line or block buffering.  We always claim that output fds are
@@ -750,7 +813,7 @@ ioctlFunc(SyscallDesc *desc, ThreadContext *tc,
      * For lack of a better return code, return ENOTTY. Ideally, we should
      * return something better here, but at least we issue the warning.
      */
-    warn("Unsupported ioctl call (return ENOTTY): ioctl(%d, 0x%x, ...) @ \n",
+    warn("Unsupported ioctl call (return ENOTTY): ioctl(%d, 0x%x, ...) @ %s\n",
          tgt_fd, req, tc->pcState());
     return -ENOTTY;
 }
@@ -866,7 +929,7 @@ openatFunc(SyscallDesc *desc, ThreadContext *tc,
     int sim_fd = -1;
     std::string used_path;
     std::vector<std::string> special_paths =
-            { "/proc/meminfo/", "/system/", "/platform/", "/etc/passwd",
+            { "/proc/meminfo", "/system/", "/platform/", "/etc/passwd",
               "/proc/self/maps", "/dev/urandom",
               "/sys/devices/system/cpu/online" };
     for (auto entry : special_paths) {
@@ -913,6 +976,56 @@ openFunc(SyscallDesc *desc, ThreadContext *tc,
 {
     return openatFunc<OS>(
             desc, tc, OS::TGT_AT_FDCWD, pathname, tgt_flags, mode);
+}
+
+/// Target getcwd() handler
+template <class OS>
+SyscallReturn
+getcwdFunc(SyscallDesc *desc, ThreadContext *tc,
+           VPtr<> buf_ptr, typename OS::size_t size)
+{
+    int result = 0;
+    auto p = tc->getProcessPtr();
+    BufferArg buf(buf_ptr, size);
+
+    // Is current working directory defined?
+    std::string cwd = p->tgtCwd;
+    if (!cwd.empty()) {
+        if (cwd.length() >= size) {
+            // Buffer too small
+            return -ERANGE;
+        }
+        strncpy((char *)buf.bufferPtr(), cwd.c_str(), size);
+        result = cwd.length();
+    } else {
+        if (getcwd((char *)buf.bufferPtr(), size)) {
+            result = strlen((char *)buf.bufferPtr());
+        } else {
+            result = -1;
+        }
+    }
+
+    buf.copyOut(SETranslatingPortProxy(tc));
+
+    return (result == -1) ? -errno : result;
+}
+
+/// Target lseek() handler
+template <class OS>
+SyscallReturn
+lseekFunc(SyscallDesc *desc, ThreadContext *tc,
+          int tgt_fd, typename OS::off_t offs, int whence)
+{
+    auto p = tc->getProcessPtr();
+
+    auto ffdp = std::dynamic_pointer_cast<FileFDEntry>((*p->fds)[tgt_fd]);
+    if (!ffdp)
+        return -EBADF;
+    int sim_fd = ffdp->getSimFD();
+
+    off_t result = lseek(sim_fd, offs, whence);
+
+    return (result == (off_t)-1) ? -errno : result;
 }
 
 /// Target unlinkat() handler.
@@ -1186,10 +1299,10 @@ pollFunc(SyscallDesc *desc, ThreadContext *tc,
      * for later. Afterwards, replace each target file descriptor in the
      * poll_fd array with its host_fd.
      */
-    int temp_tgt_fds[nfds];
+    auto temp_tgt_fds = std::make_unique<int[]>(nfds);
     for (int index = 0; index < nfds; index++) {
         temp_tgt_fds[index] = ((struct pollfd *)fdsBuf.bufferPtr())[index].fd;
-        auto tgt_fd = temp_tgt_fds[index];
+        int tgt_fd = temp_tgt_fds[index];
         auto hbfdp = std::dynamic_pointer_cast<HBFDEntry>((*p->fds)[tgt_fd]);
         if (!hbfdp)
             return -EBADF;
@@ -1230,7 +1343,7 @@ pollFunc(SyscallDesc *desc, ThreadContext *tc,
      * target file descriptor.
      */
     for (int index = 0; index < nfds; index++) {
-        auto tgt_fd = temp_tgt_fds[index];
+        int tgt_fd = temp_tgt_fds[index];
         ((struct pollfd *)fdsBuf.bufferPtr())[index].fd = tgt_fd;
     }
 
@@ -1266,7 +1379,8 @@ fchmodFunc(SyscallDesc *desc, ThreadContext *tc, int tgt_fd, uint32_t mode)
 template <class OS>
 SyscallReturn
 mremapFunc(SyscallDesc *desc, ThreadContext *tc,
-        VPtr<> start, uint64_t old_length, uint64_t new_length, uint64_t flags,
+        VPtr<> start, typename OS::size_t old_length,
+        typename OS::size_t new_length, int flags,
         guest_abi::VarArgs<uint64_t> varargs)
 {
     auto p = tc->getProcessPtr();
@@ -1375,7 +1489,7 @@ statFunc(SyscallDesc *desc, ThreadContext *tc,
 template <class OS>
 SyscallReturn
 newfstatatFunc(SyscallDesc *desc, ThreadContext *tc, int dirfd,
-               VPtr<> pathname, VPtr<typename OS::tgt_stat> tgt_stat,
+               VPtr<> pathname, VPtr<typename OS::tgt_stat64> tgt_stat,
                int flags)
 {
     std::string path;
@@ -1405,7 +1519,7 @@ newfstatatFunc(SyscallDesc *desc, ThreadContext *tc, int dirfd,
     if (result < 0)
         return -errno;
 
-    copyOutStatBuf<OS>(tgt_stat, &host_buf);
+    copyOutStat64Buf<OS>(tgt_stat, &host_buf);
 
     return 0;
 }
@@ -1454,6 +1568,45 @@ stat64Func(SyscallDesc *desc, ThreadContext *tc,
            VPtr<> pathname, VPtr<typename OS::tgt_stat64> tgt_stat)
 {
     return fstatat64Func<OS>(desc, tc, OS::TGT_AT_FDCWD, pathname, tgt_stat);
+}
+
+/// Target statx() handler.
+template <class OS>
+SyscallReturn
+statxFunc(SyscallDesc *desc, ThreadContext *tc,
+          int dirfd, VPtr<> pathname, int flags,
+          unsigned int mask, VPtr<typename OS::tgt_statx> tgt_statx)
+{
+    std::string path;
+
+    if (!SETranslatingPortProxy(tc).tryReadString(path, pathname))
+        return -EFAULT;
+
+    if (path.empty() && !(flags & OS::TGT_AT_EMPTY_PATH))
+        return -ENOENT;
+    flags = flags & ~OS::TGT_AT_EMPTY_PATH;
+
+    warn_if(flags != 0, "statx: Flag bits %#x not supported.", flags);
+
+    // Modifying path from the directory descriptor
+    if (auto res = atSyscallPath<OS>(tc, dirfd, path); !res.successful()) {
+        return res;
+    }
+
+    auto p = tc->getProcessPtr();
+
+    // Adjust path for cwd and redirection
+    path = p->checkPathRedirect(path);
+
+    struct stat host_buf;
+    int result = stat(path.c_str(), &host_buf);
+
+    if (result < 0)
+        return -errno;
+
+    copyOutStatxBuf<OS>(tgt_statx, &host_buf);
+
+    return 0;
 }
 
 /// Target fstat64() handler.
@@ -1667,6 +1820,39 @@ doClone(SyscallDesc *desc, ThreadContext *tc, RegVal flags, RegVal newStack,
     cp->assignThreadContext(ctc->contextId());
     owner->revokeThreadContext(ctc->contextId());
 
+    // For switchable CPU configurations, we need to also set the process
+    // pointer on any switched-out CPUs that have the same CPU ID and thread
+    // context ID. This ensures that when CPU switching occurs, both CPUs
+    // have consistent process pointers, preventing assertion failures in
+    // takeOverFrom().
+    BaseCPU *current_cpu = ctc->getCpuPtr();
+    ThreadID current_thread_id = ctc->threadId();
+
+    // Iterate through all CPUs in the system to find switchable partners
+    for (BaseCPU *cpu : BaseCPU::getCpuList()) {
+        // Skip the current CPU and only consider switched-out CPUs with
+        // matching ID
+        if (cpu != current_cpu && cpu->switchedOut() &&
+            cpu->cpuId() == current_cpu->cpuId()) {
+
+            // Find the corresponding thread context on the switched-out CPU
+            if (current_thread_id < cpu->numThreadContexts()) {
+                ThreadContext *switched_tc =
+                    cpu->getThreadContext(current_thread_id);
+
+                // Update the process pointer to match the active CPU
+                if (switched_tc) {
+                    DPRINTF(SyscallVerbose,
+                            "doClone: Updating switched-out "
+                            "CPU %d thread %d process pointer from %p to %p\n",
+                            cpu->cpuId(), current_thread_id,
+                            switched_tc->getProcessPtr(), cp);
+                    switched_tc->setProcessPtr(cp);
+                }
+            }
+        }
+    }
+
     if (flags & OS::TGT_CLONE_PARENT_SETTID) {
         BufferArg ptidBuf(ptidPtr, sizeof(long));
         long *ptid = (long *)ptidBuf.bufferPtr();
@@ -1777,7 +1963,7 @@ fstatfsFunc(SyscallDesc *desc, ThreadContext *tc,
 template <class OS>
 SyscallReturn
 readvFunc(SyscallDesc *desc, ThreadContext *tc,
-          int tgt_fd, uint64_t tiov_base,
+          int tgt_fd, VPtr<> tiov_base,
           typename OS::size_t count)
 {
     auto p = tc->getProcessPtr();
@@ -1788,8 +1974,8 @@ readvFunc(SyscallDesc *desc, ThreadContext *tc,
     int sim_fd = ffdp->getSimFD();
 
     SETranslatingPortProxy prox(tc);
-    typename OS::tgt_iovec tiov[count];
-    struct iovec hiov[count];
+    auto tiov = std::make_unique<typename OS::tgt_iovec[]>(count);
+    auto hiov = std::make_unique<struct iovec[]>(count);
     for (typename OS::size_t i = 0; i < count; ++i) {
         prox.readBlob(tiov_base + (i * sizeof(typename OS::tgt_iovec)),
                       &tiov[i], sizeof(typename OS::tgt_iovec));
@@ -1797,7 +1983,7 @@ readvFunc(SyscallDesc *desc, ThreadContext *tc,
         hiov[i].iov_base = new char [hiov[i].iov_len];
     }
 
-    int result = readv(sim_fd, hiov, count);
+    int result = readv(sim_fd, hiov.get(), count);
     int local_errno = errno;
 
     for (typename OS::size_t i = 0; i < count; ++i) {
@@ -1815,7 +2001,7 @@ readvFunc(SyscallDesc *desc, ThreadContext *tc,
 template <class OS>
 SyscallReturn
 writevFunc(SyscallDesc *desc, ThreadContext *tc,
-           int tgt_fd, uint64_t tiov_base,
+           int tgt_fd, VPtr<> tiov_base,
            typename OS::size_t count)
 {
     auto p = tc->getProcessPtr();
@@ -1826,7 +2012,7 @@ writevFunc(SyscallDesc *desc, ThreadContext *tc,
     int sim_fd = hbfdp->getSimFD();
 
     SETranslatingPortProxy prox(tc);
-    struct iovec hiov[count];
+    auto hiov = std::make_unique<struct iovec[]>(count);
     for (typename OS::size_t i = 0; i < count; ++i) {
         typename OS::tgt_iovec tiov;
 
@@ -1838,7 +2024,7 @@ writevFunc(SyscallDesc *desc, ThreadContext *tc,
                       hiov[i].iov_len);
     }
 
-    int result = writev(sim_fd, hiov, count);
+    int result = writev(sim_fd, hiov.get(), count);
 
     for (typename OS::size_t i = 0; i < count; ++i)
         delete [] (char *)hiov[i].iov_base;
@@ -1992,7 +2178,8 @@ mmapFunc(SyscallDesc *desc, ThreadContext *tc,
 template <class OS>
 SyscallReturn
 pread64Func(SyscallDesc *desc, ThreadContext *tc,
-            int tgt_fd, VPtr<> bufPtr, int nbytes, int offset)
+            int tgt_fd, VPtr<> bufPtr, typename OS::size_t nbytes,
+            typename OS::off_t offset)
 {
     auto p = tc->getProcessPtr();
 
@@ -2013,7 +2200,8 @@ pread64Func(SyscallDesc *desc, ThreadContext *tc,
 template <class OS>
 SyscallReturn
 pwrite64Func(SyscallDesc *desc, ThreadContext *tc,
-             int tgt_fd, VPtr<> bufPtr, int nbytes, int offset)
+             int tgt_fd, VPtr<> bufPtr, typename OS::size_t nbytes,
+             typename OS::off_t offset)
 {
     auto p = tc->getProcessPtr();
 
@@ -2259,6 +2447,7 @@ execveFunc(SyscallDesc *desc, ThreadContext *tc,
     pp->cwd.assign(p->tgtCwd);
     pp->system = p->system;
     pp->release = p->release;
+    pp->maxStackSize = p->memState->getMaxStackSize();
     /**
      * Prevent process object creation with identical PIDs (which will trip
      * a fatal check in Process constructor). The execve call is supposed to
@@ -2409,7 +2598,7 @@ tgkillFunc(SyscallDesc *desc, ThreadContext *tc, int tgid, int tid, int sig)
         }
     }
 
-    if (sig != 0 || sig != OS::TGT_SIGABRT)
+    if (sig != 0 && sig != OS::TGT_SIGABRT)
         return -EINVAL;
 
     if (tgt_proc == nullptr)
@@ -2646,7 +2835,7 @@ selectFunc(SyscallDesc *desc, ThreadContext *tc, int nfds,
 template <class OS>
 SyscallReturn
 readFunc(SyscallDesc *desc, ThreadContext *tc,
-        int tgt_fd, VPtr<> buf_ptr, int nbytes)
+        int tgt_fd, VPtr<> buf_ptr, typename OS::size_t nbytes)
 {
     auto p = tc->getProcessPtr();
 
@@ -2674,7 +2863,7 @@ readFunc(SyscallDesc *desc, ThreadContext *tc,
 template <class OS>
 SyscallReturn
 writeFunc(SyscallDesc *desc, ThreadContext *tc,
-        int tgt_fd, VPtr<> buf_ptr, int nbytes)
+        int tgt_fd, VPtr<> buf_ptr, typename OS::size_t nbytes)
 {
     auto p = tc->getProcessPtr();
 
@@ -3073,15 +3262,55 @@ getrandomFunc(SyscallDesc *desc, ThreadContext *tc,
               VPtr<> buf_ptr, typename OS::size_t count,
               unsigned int flags)
 {
+    static Random::RandomPtr se_prng(Random::genRandom());
     SETranslatingPortProxy proxy(tc);
 
     TypedBufferArg<uint8_t> buf(buf_ptr, count);
     for (int i = 0; i < count; ++i) {
-        buf[i] = gem5::random_mt.random<uint8_t>();
+        buf[i] = se_prng->random<uint8_t>();
     }
     buf.copyOut(proxy);
 
     return count;
+}
+
+template <typename OS>
+SyscallReturn
+sigreturnFunc(SyscallDesc *desc, ThreadContext *tc)
+{
+    OS::archSigreturn(tc);
+    return SyscallReturn(); // There is no return value for sigreturn.
+}
+
+template <typename OS>
+SyscallReturn
+sendfileFunc(SyscallDesc *desc, ThreadContext *tc, int tgt_out_fd,
+             int tgt_in_fd, VPtr<typename OS::off_t> tgt_offset,
+             typename OS::size_t count)
+{
+#if defined(__linux__)
+    auto p = tc->getProcessPtr();
+    auto out_fdp = std::dynamic_pointer_cast<HBFDEntry>((*p->fds)[tgt_out_fd]);
+    auto in_fdp = std::dynamic_pointer_cast<HBFDEntry>((*p->fds)[tgt_in_fd]);
+    panic_if(!out_fdp || !in_fdp, "sendfile: unhandled non-host-backed FDs\n");
+    const int sim_out_fd = out_fdp->getSimFD();
+    const int sim_in_fd = in_fdp->getSimFD();
+
+    off_t sim_offset;
+    if (tgt_offset) {
+        sim_offset = *tgt_offset;
+    }
+    ssize_t result = sendfile(sim_out_fd, sim_in_fd,
+                              tgt_offset ? &sim_offset : nullptr, count);
+    if (tgt_offset) {
+        *tgt_offset = sim_offset;
+    }
+
+    return result;
+#else
+    warnUnsupportedOS("sendfile");
+    return -ENOSYS;
+#endif
 }
 
 } // namespace gem5

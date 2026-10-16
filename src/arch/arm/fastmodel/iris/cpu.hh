@@ -47,7 +47,6 @@ class ThreadContext;
 class BaseCpuEvs
 {
   public:
-    virtual void sendFunc(PacketPtr pkt) = 0;
     virtual void setClkPeriod(Tick clk_period) = 0;
     virtual void setSysCounterFrq(uint64_t sys_counter_frq) = 0;
     virtual void setCluster(SimObject *cluster) = 0;
@@ -76,13 +75,7 @@ class BaseCPU : public gem5::BaseCPU
         panic("%s not implemented.", __FUNCTION__);
     }
 
-    void
-    wakeup(ThreadID tid) override
-    {
-        auto *tc = threadContexts.at(tid);
-        if (tc->status() == gem5::ThreadContext::Suspended)
-            tc->activate();
-    }
+    void wakeup(ThreadID tid) override;
 
     Counter totalInsts() const override;
     Counter totalOps() const override { return totalInsts(); }

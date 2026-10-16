@@ -94,6 +94,13 @@ BaseMMU::flushAll()
 }
 
 void
+BaseMMU::reset()
+{
+    // flush the TLBs by defaults
+    flushAll();
+}
+
+void
 BaseMMU::demapPage(Addr vaddr, uint64_t asn)
 {
     itb->demapPage(vaddr, asn);
@@ -119,6 +126,12 @@ BaseMMU::translateFunctional(const RequestPtr &req, ThreadContext *tc,
                              BaseMMU::Mode mode)
 {
     return getTlb(mode)->translateFunctional(req, tc, mode);
+}
+
+Addr
+BaseMMU::getValidAddr(Addr vaddr, ThreadContext *tc, Mode mode)
+{
+    return vaddr;
 }
 
 Fault
@@ -149,8 +162,10 @@ BaseMMU::MMUTranslationGen::translate(Range &range) const
 
     range.fault = mmu->translateFunctional(req, tc, mode);
 
-    if (range.fault == NoFault)
+    if (range.fault == NoFault) {
         range.paddr = req->getPaddr();
+        range.flags = req->getFlags();
+    }
 }
 
 void

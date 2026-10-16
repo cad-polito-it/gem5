@@ -60,7 +60,6 @@
 namespace gem5
 {
 
-  GEM5_DEPRECATED_NAMESPACE(Minor, minor);
   namespace minor
   {
 
@@ -170,7 +169,7 @@ namespace gem5
       LSQ &getLSQ() { return lsq; }
       bool isMemoryExecuting(ThreadID tid) const
       {
-        return memory.memoryInfo[tid].inFlightInst;
+        return static_cast<bool>(memory.memoryInfo[tid].inFlightInst);
       }
 
       bool decodeHasBranched() const;

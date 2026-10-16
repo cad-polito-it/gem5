@@ -40,6 +40,7 @@ from m5.params import *
 from m5.proxy import *
 from m5.SimObject import SimObject
 
+
 # A MessageBuffer inserts random delays to enqueued messages when the
 # randomization param is set to 'enabled' or when globally enabled for the
 # RubySystem and the param is set to 'ruby_system' (default). 'disabled'
@@ -72,9 +73,7 @@ class MessageBuffer(SimObject):
     )
 
     out_port = RequestPort("Request port to MessageBuffer receiver")
-    master = DeprecatedParam(out_port, "`master` is now called `out_port`")
     in_port = ResponsePort("Response port from MessageBuffer sender")
-    slave = DeprecatedParam(in_port, "`slave` is now called `in_port`")
     max_dequeue_rate = Param.Unsigned(
         0,
         "Maximum number of messages that can \

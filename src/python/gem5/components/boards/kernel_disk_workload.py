@@ -1,4 +1,4 @@
-# Copyright (c) 2021 The Regents of the University of California
+# Copyright (c) 2021, 2023 The Regents of the University of California
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -24,16 +24,26 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from abc import abstractmethod
-
-from .abstract_board import AbstractBoard
-from ...resources.resource import AbstractResource
-
-from typing import List, Optional, Union
 import os
+from abc import abstractmethod
 from pathlib import Path
+from typing import (
+    List,
+    Optional,
+    Union,
+)
 
 import m5
+from m5.util import warn
+
+from ...resources.resource import (
+    BinaryResource,
+    BootloaderResource,
+    CheckpointResource,
+    DiskImageResource,
+    KernelResource,
+)
+from .abstract_board import AbstractBoard
 
 
 class KernelDiskWorkload:
@@ -45,25 +55,25 @@ class KernelDiskWorkload:
     added as a superclass to a board and the abstract methods implemented.
     E.g.:
 
-    ```
-    class X86Board(AbstractBoard, KernelDiskWorkload):
-        ...
-        @overrides(KernelDiskWorkload)
-        def get_default_kernel_args(self) -> List[str]:
-            return [
-                "earlyprintk=ttyS0",
-                "console=ttyS0",
-                "lpj=7999923",
-                "root={root_value}",
-            ]
-        ...
-    ```
+    .. code-block:: python
 
-    Notes
-    -----
+        class X86Board(AbstractBoard, KernelDiskWorkload):
+            ...
+            @overrides(KernelDiskWorkload)
+            def get_default_kernel_args(self) -> List[str]:
+                return [
+                    "earlyprintk=ttyS0",
+                    "console=ttyS0",
+                    "lpj=7999923",
+                    "root={root_value}",
+                ]
+            ...
 
-    * This assumes only one disk is set.
-    * This assumes the Linux kernel is used.
+
+    .. note::
+
+        * This assumes only one disk is set.
+        * This assumes the Linux kernel is used.
     """
 
     @abstractmethod
@@ -71,9 +81,9 @@ class KernelDiskWorkload:
         """
         Returns a default list of arguments for the workload kernel. We assume
         the following strings may be used as placeholders, to be replaced when
-        `set_kernel_disk_workload` is executed:
+        ``set_kernel_disk_workload`` is executed:
 
-        * `{root_value}` : set to `get_default_kernel_root_val()`.
+        * `{root_value}` : set to ``get_default_kernel_root_val()``.
 
         :returns: A default list of arguments for the workload kernel.
         """
@@ -82,26 +92,28 @@ class KernelDiskWorkload:
     @abstractmethod
     def get_disk_device(self) -> str:
         """
-        Get the disk device, e.g., "/dev/sda", where the disk image is placed.
+        Set a default disk device, in case user does not specify a disk device.
 
         :returns: The disk device.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def _add_disk_to_board(self, disk_image: AbstractResource) -> None:
+    def _add_disk_to_board(self, disk_image: DiskImageResource) -> None:
         """
         Sets the configuration needed to add the disk image to the board.
 
-        **Note:** This will be executed at the end of the
-        `set_kernel_disk_workload` function.
+        .. note::
+
+            This will be executed at the end of the
+            ``set_kernel_disk_workload`` function.
 
         :param disk_image: The disk image to add to the system.
         """
         raise NotImplementedError
 
     def get_disk_root_partition(
-        cls, disk_image: AbstractResource
+        cls, disk_image: DiskImageResource
     ) -> Optional[str]:
         """
         Obtains the root partition of a disk image by inspecting the resource's
@@ -109,39 +121,36 @@ class KernelDiskWorkload:
 
         :returns: The disk image's root partition.
         """
-        try:
-            return disk_image.get_metadata()["additional_metadata"][
-                "root_partition"
-            ]
-        except KeyError:
-            return None
+        return disk_image.get_root_partition()
 
-    def get_default_kernel_root_val(self, disk_image: AbstractResource) -> str:
+    def get_default_kernel_root_val(
+        self, disk_image: DiskImageResource
+    ) -> str:
         """
         Get the default kernel root value to be passed to the kernel. This is
-        determined by the value implemented in the `get_disk_device()`
-        function, and the disk image partition, obtained from
-        `get_disk_root_partition()`
-
+        determined by the user-passed or board-default ``disk_device``, and
+        the disk image partition obtained from ``get_disk_root_partition()``.
 
         :param disk_image: The disk image to be added to the system.
-        :returns: The default value for the 'root' argument to be passed to the
-        kernel.
+
+        :returns: The default value for the ``root`` argument to be passed to the
+                  kernel.
         """
-        return self.get_disk_device() + (
+        return (self._disk_device or self.get_disk_device()) + (
             self.get_disk_root_partition(disk_image) or ""
         )
 
     def set_kernel_disk_workload(
         self,
-        kernel: AbstractResource,
-        disk_image: AbstractResource,
-        bootloader: Optional[AbstractResource] = None,
+        kernel: KernelResource,
+        disk_image: DiskImageResource,
+        bootloader: Optional[BootloaderResource] = None,
+        disk_device: Optional[str] = None,
         readfile: Optional[str] = None,
         readfile_contents: Optional[str] = None,
         kernel_args: Optional[List[str]] = None,
         exit_on_work_items: bool = True,
-        checkpoint: Optional[Union[Path, AbstractResource]] = None,
+        checkpoint: Optional[Union[Path, CheckpointResource]] = None,
     ) -> None:
         """
         This function allows the setting of a full-system run with a Kernel
@@ -150,24 +159,35 @@ class KernelDiskWorkload:
         :param kernel: The kernel to boot.
         :param disk_image: The disk image to mount.
         :param bootloader: The current implementation of the ARM board requires
-        three resources to operate -- kernel, disk image, and, a bootloader.
+                           three resources to operate -- kernel, disk image,
+                           and, a bootloader.
         :param readfile: An optional parameter stating the file to be read by
-        by `m5 readfile`.
+                         by ``m5 readfile``.
         :param readfile_contents: An optional parameter stating the contents of
-        the readfile file. If set with `readfile`, the contents of `readfile`
-        will be overwritten with `readfile_contents`, otherwise a new file will
-        be created with the value of `readfile_contents`.
+                                  the readfile file. If set with ``readfile``,
+                                  the contents of `readfile` will be overwritten
+                                  with ``readfile_contents``, otherwise a new file
+                                  will be created with the value of
+                                  ``readfile_contents``.
         :param kernel_args: An optional parameter for setting arguments to be
-        passed to the kernel. By default set to `get_default_kernel_args()`.
+                            passed to the kernel. By default set to
+                            ``get_default_kernel_args()``.
         :param exit_on_work_items: Whether the simulation should exit on work
-        items. True by default.
+                                   items. ``True`` by default.
         :param checkpoint: The checkpoint directory. Used to restore the
-        simulation to that checkpoint.
+                           simulation to that checkpoint.
         """
 
         # We assume this this is in a multiple-inheritance setup with an
         # Abstract board. This function will not work otherwise.
         assert isinstance(self, AbstractBoard)
+
+        if self.is_workload_set():
+            warn("Workload has been set more than once!")
+        self.set_is_workload_set(True)
+
+        # Set the disk device
+        self._disk_device = disk_device
 
         # If we are setting a workload of this type, we need to run as a
         # full-system simulation.
@@ -180,27 +200,23 @@ class KernelDiskWorkload:
         self.workload.command_line = (
             " ".join(kernel_args or self.get_default_kernel_args())
         ).format(
-            root_value=self.get_default_kernel_root_val(disk_image=disk_image)
+            root_value=self.get_default_kernel_root_val(disk_image=disk_image),
+            disk_device=self._disk_device or self.get_disk_device(),
         )
 
         # Setting the bootloader information for ARM board. The current
         # implementation of the ArmBoard class expects a boot loader file to be
         # provided along with the kernel and the disk image.
 
+        self._bootloader = []
         if bootloader is not None:
-            self._bootloader = [bootloader.get_local_path()]
+            self._bootloader.append(bootloader.get_local_path())
 
         # Set the readfile.
         if readfile:
             self.readfile = readfile
         elif readfile_contents:
-            self.readfile = os.path.join(m5.options.outdir, "readfile")
-
-        # Add the contents to the readfile, if specified.
-        if readfile_contents:
-            file = open(self.readfile, "w+")
-            file.write(readfile_contents)
-            file.close()
+            self._set_readfile_contents(readfile_contents)
 
         self._add_disk_to_board(disk_image=disk_image)
 
@@ -212,11 +228,63 @@ class KernelDiskWorkload:
         if checkpoint:
             if isinstance(checkpoint, Path):
                 self._checkpoint = checkpoint
-            elif isinstance(checkpoint, AbstractResource):
+            elif isinstance(checkpoint, CheckpointResource):
                 self._checkpoint = Path(checkpoint.get_local_path())
             else:
                 # The checkpoint_dir must be None, Path, Or AbstractResource.
                 raise Exception(
                     "Checkpoints must be passed as a Path or an "
-                    "AbstractResource."
+                    "CheckpointResource."
                 )
+
+    def append_kernel_arg(self, arg: str) -> None:
+        """
+        Append a kernel argument to the list of kernel arguments.
+
+        :param arg: The kernel argument to append.
+        """
+        self.workload.command_line += f" {arg}"
+
+    def _set_readfile_contents(self, readfile_contents: str) -> None:
+        # We hash the contents of the readfile and append it to the
+        # readfile name. This is to ensure that we don't overwrite the
+        # readfile if the contents are different.
+        readfile_contents_hash = hex(
+            hash(tuple(bytes(readfile_contents, "utf-8")))
+        )
+        self.readfile = os.path.join(
+            m5.options.outdir, ("readfile_" + readfile_contents_hash)
+        )
+
+        file = open(self.readfile, "w+")
+        file.write(readfile_contents)
+        file.close()
+
+    def set_binary_to_run(self, application: BinaryResource, args: List[str]):
+        """
+        Set the binary to run on the board.
+
+        The binary could be an application or any executable script.
+        Note: this will override the readfile or readfile_contents set in the
+        set_kernel_disk_workload function.
+
+        :param application: The binary to run.
+        :param args: The arguments to pass to the binary.
+        """
+        if self.readfile:
+            warn(
+                "Setting a binary to run will override the readfile "
+                "set in the set_kernel_disk_workload function."
+            )
+        from base64 import b64encode
+
+        with open(application.get_local_path(), "rb") as binfile:
+            encodedBin = b64encode(binfile.read()).decode()
+
+        application_command = (
+            f'echo "{encodedBin}" | base64 -d > myapp\n'
+            "chmod +x myapp\n"
+            f"./myapp {args}\n"
+        )
+
+        self._set_readfile_contents(application_command)

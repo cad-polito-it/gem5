@@ -43,17 +43,17 @@
 
 #include <vector>
 
+#include "base/cache/associative_cache.hh"
 #include "base/circular_queue.hh"
 #include "base/sat_counter.hh"
-#include "mem/cache/prefetch/associative_set.hh"
 #include "mem/cache/prefetch/queued.hh"
+#include "mem/cache/tags/tagged_entry.hh"
 
 namespace gem5
 {
 
 struct STeMSPrefetcherParams;
 
-GEM5_DEPRECATED_NAMESPACE(Prefetcher, prefetch);
 namespace prefetch
 {
 
@@ -94,10 +94,11 @@ class STeMS : public Queued
         /** Sequence of accesses */
         std::vector<SequenceEntry> sequence;
 
-        ActiveGenerationTableEntry(int num_positions)
+        ActiveGenerationTableEntry(int num_positions, TagExtractor ext)
           : TaggedEntry(), paddress(0), pc(0),
             seqCounter(0), sequence(num_positions)
         {
+            registerTagExtractor(ext);
         }
 
         void
@@ -154,9 +155,9 @@ class STeMS : public Queued
     };
 
     /** Active Generation Table (AGT) */
-    AssociativeSet<ActiveGenerationTableEntry> activeGenerationTable;
+    AssociativeCache<ActiveGenerationTableEntry> activeGenerationTable;
     /** Pattern Sequence Table (PST) */
-    AssociativeSet<ActiveGenerationTableEntry> patternSequenceTable;
+    AssociativeCache<ActiveGenerationTableEntry> patternSequenceTable;
 
     /** Data type of the Region Miss Order Buffer entry */
     struct RegionMissOrderBufferEntry
@@ -182,7 +183,7 @@ class STeMS : public Queued
     unsigned int lastTriggerCounter;
 
     /** Checks if the active generations have ended */
-    void checkForActiveGenerationsEnd();
+    void checkForActiveGenerationsEnd(const CacheAccessor &cache);
     /**
      * Adds an entry to the RMOB
      * @param sr_addr Spatial region address
@@ -207,7 +208,8 @@ class STeMS : public Queued
     ~STeMS() = default;
 
     void calculatePrefetch(const PrefetchInfo &pfi,
-                           std::vector<AddrPriority> &addresses) override;
+                           std::vector<AddrPriority> &addresses,
+                           const CacheAccessor &cache) override;
 };
 
 } // namespace prefetch

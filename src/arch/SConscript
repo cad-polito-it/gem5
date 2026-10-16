@@ -56,22 +56,19 @@ Import('*')
 #
 #################################################################
 
-if env['CONF']['USE_ARM_ISA']:
-    isa = 'arm'
-elif env['CONF']['USE_MIPS_ISA']:
-    isa = 'mips'
-elif env['CONF']['USE_POWER_ISA']:
-    isa = 'power'
-elif env['CONF']['USE_RISCV_ISA']:
-    isa = 'riscv'
-elif env['CONF']['USE_SPARC_ISA']:
-    isa = 'sparc'
-elif env['CONF']['USE_X86_ISA']:
-    isa = 'x86'
-elif env['CONF']['USE_NULL_ISA']:
-    isa = 'null'
+if env['CONF']['BUILD_ISA']:
+    if (
+        not env['CONF']['USE_ARM_ISA'] and
+        not env['CONF']['USE_MIPS_ISA'] and
+        not env['CONF']['USE_POWER_ISA'] and
+        not env['CONF']['USE_RISCV_ISA'] and
+        not env['CONF']['USE_SPARC_ISA'] and
+        not env['CONF']['USE_X86_ISA']
+    ):
+        error("At least one ISA need to be set")
 
-amdgpu_isa = ['gcn3', 'vega']
+
+amdgpu_isa = ['vega']
 
 if env['CONF']['BUILD_GPU']:
     env.SwitchingHeaders(
@@ -139,7 +136,7 @@ IsaDescBuilder = Builder(action=desc_action)
 
 # ISAs should use this function to set up an IsaDescBuilder and not try to
 # set one up manually.
-def ISADesc(desc, decoder_splits=1, exec_splits=1, tags=None, add_tags=None):
+def ISADesc(desc, decoder_splits=1, exec_splits=1, tags=None):
     '''Set up a builder for an ISA description.
 
     The decoder_splits and exec_splits parameters let us determine what
@@ -204,7 +201,7 @@ def ISADesc(desc, decoder_splits=1, exec_splits=1, tags=None, add_tags=None):
         append = {}
         if env['CLANG']:
             append['CCFLAGS'] = ['-Wno-self-assign']
-        Source(gen_file(name), append=append, tags=tags, add_tags=add_tags)
+        Source(gen_file(name), append=append, tags=tags)
 
     source_gen('decoder.cc')
 
@@ -231,10 +228,11 @@ DebugFlag('IntRegs')
 DebugFlag('FloatRegs')
 DebugFlag('VecRegs')
 DebugFlag('VecPredRegs')
+DebugFlag('MatRegs')
 DebugFlag('CCRegs')
 DebugFlag('MiscRegs')
 CompoundFlag('Registers', [ 'IntRegs', 'FloatRegs', 'VecRegs', 'VecPredRegs',
-                            'CCRegs', 'MiscRegs' ])
+                            'MatRegs', 'CCRegs', 'MiscRegs' ])
 
 DebugFlag('Decoder', "Decoder debug output")
 DebugFlag('Faults', "Information about faults, exceptions, interrupts, etc")

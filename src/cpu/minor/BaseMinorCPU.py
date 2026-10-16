@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2014, 2017-2018 ARM Limited
+# Copyright (c) 2012-2014, 2017-2018, 2025 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -37,15 +37,14 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from m5.defines import buildEnv
+from m5.objects.BaseCPU import BaseCPU
+from m5.objects.BranchPredictor import *
+from m5.objects.DummyChecker import DummyChecker
+from m5.objects.FuncUnit import OpClass
+from m5.objects.TimingExpr import TimingExpr
 from m5.params import *
 from m5.proxy import *
 from m5.SimObject import SimObject
-from m5.objects.BaseCPU import BaseCPU
-from m5.objects.DummyChecker import DummyChecker
-from m5.objects.BranchPredictor import *
-from m5.objects.TimingExpr import TimingExpr
-
-from m5.objects.FuncUnit import OpClass
 
 
 class MinorOpClass(SimObject):
@@ -67,7 +66,7 @@ class MinorOpClassSet(SimObject):
     cxx_class = "gem5::MinorOpClassSet"
 
     opClasses = VectorParam.MinorOpClass(
-        [], "op classes to be matched." "  An empty list means any class"
+        [], "op classes to be matched.  An empty list means any class"
     )
 
 
@@ -83,13 +82,13 @@ class MinorFUTiming(SimObject):
         " (ext_mach_inst & mask) == match",
     )
     suppress = Param.Bool(
-        False, "if true, this inst. is not executed by" " this FU"
+        False, "if true, this inst. is not executed by this FU"
     )
     extraCommitLat = Param.Cycles(
-        0, "extra cycles to stall commit for" " this inst."
+        0, "extra cycles to stall commit for this inst."
     )
     extraCommitLatExpr = Param.TimingExpr(
-        NULL, "extra cycles as a" " run-time evaluated expression"
+        NULL, "extra cycles as a run-time evaluated expression"
     )
     extraAssumedLat = Param.Cycles(
         0,
@@ -109,7 +108,7 @@ class MinorFUTiming(SimObject):
         " class",
     )
     description = Param.String(
-        "", "description string of the decoding/inst." " class"
+        "", "description string of the decoding/inst class"
     )
 
 
@@ -129,11 +128,11 @@ class MinorFU(SimObject):
 
     opClasses = Param.MinorOpClassSet(
         MinorOpClassSet(),
-        "type of operations" " allowed on this functional unit",
+        "type of operations allowed on this functional unit",
     )
     opLat = Param.Cycles(1, "latency in cycles")
     issueLat = Param.Cycles(
-        1, "cycles until another instruction can be" " issued"
+        1, "cycles until another instruction can be issued"
     )
     timings = VectorParam.MinorFUTiming([], "extra decoding rules")
 
@@ -154,7 +153,24 @@ class MinorFUPool(SimObject):
 
 class MinorDefaultIntFU(MinorFU):
     opClasses = minorMakeOpClassSet(
-        ["IntAlu", "MemRead", "MemWrite", "FloatMemRead", "FloatMemWrite"]
+        [
+            "IntAlu",
+            "MemRead",
+            "MemWrite",
+            "FloatMemRead",
+            "FloatMemWrite",
+            "SimdUnitStrideLoad",
+            "SimdUnitStrideStore",
+            "SimdUnitStrideMaskLoad",
+            "SimdUnitStrideMaskStore",
+            "SimdStridedLoad",
+            "SimdStridedStore",
+            "SimdIndexedLoad",
+            "SimdIndexedStore",
+            "SimdUnitStrideFaultOnlyFirstLoad",
+            "SimdWholeRegisterLoad",
+            "SimdWholeRegisterStore",
+        ]
     )
     timings = [MinorFUTiming(description="Int", srcRegsRelativeLats=[0])]
     opLat = 1
@@ -180,6 +196,7 @@ class MinorDefaultFloatSimdFU(MinorFU):
             "FloatCmp",
             "FloatCvt",
             "FloatMisc",
+            "Bf16Cvt",
             "SimdAdd",
             "SimdAddAcc",
             "SimdAlu",
@@ -188,6 +205,7 @@ class MinorDefaultFloatSimdFU(MinorFU):
             "SimdMisc",
             "SimdMult",
             "SimdMultAcc",
+            "SimdMatMultAcc",
             "SimdShift",
             "SimdShiftAcc",
             "SimdDiv",
@@ -200,6 +218,7 @@ class MinorDefaultFloatSimdFU(MinorFU):
             "SimdFloatMisc",
             "SimdFloatMult",
             "SimdFloatMultAcc",
+            "SimdFloatMatMultAcc",
             "SimdFloatSqrt",
             "SimdReduceAdd",
             "SimdReduceAlu",
@@ -214,6 +233,24 @@ class MinorDefaultFloatSimdFU(MinorFU):
             "SimdSha256Hash2",
             "SimdShaSigma2",
             "SimdShaSigma3",
+            "SimdSha3",
+            "SimdSm4e",
+            "SimdCrc",
+            "Matrix",
+            "MatrixMov",
+            "MatrixOP",
+            "SimdExt",
+            "SimdFloatExt",
+            "SimdFloatCvt",
+            "SimdConfig",
+            "SimdDotProd",
+            "SimdBf16Add",
+            "SimdBf16Cmp",
+            "SimdBf16Cvt",
+            "SimdBf16DotProd",
+            "SimdBf16MatMultAcc",
+            "SimdBf16Mult",
+            "SimdBf16MultAcc",
         ]
     )
 
@@ -256,7 +293,23 @@ class MinorDefaultPredFU(MinorFU):
 
 # class MinorDefaultMemFU(MinorFU):
 #     opClasses = minorMakeOpClassSet(
-#         ["MemRead", "MemWrite", "FloatMemRead", "FloatMemWrite"]
+#         [
+#             "MemRead",
+#             "MemWrite",
+#             "FloatMemRead",
+#             "FloatMemWrite",
+#             "SimdUnitStrideLoad",
+#             "SimdUnitStrideStore",
+#             "SimdUnitStrideMaskLoad",
+#             "SimdUnitStrideMaskStore",
+#             "SimdStridedLoad",
+#             "SimdStridedStore",
+#             "SimdIndexedLoad",
+#             "SimdIndexedStore",
+#             "SimdUnitStrideFaultOnlyFirstLoad",
+#             "SimdWholeRegisterLoad",
+#             "SimdWholeRegisterStore",
+#         ]
 #     )
 #     timings = [
 #         MinorFUTiming(
@@ -267,7 +320,7 @@ class MinorDefaultPredFU(MinorFU):
 
 
 class MinorDefaultMiscFU(MinorFU):
-    opClasses = minorMakeOpClassSet(["IprAccess", "InstPrefetch"])
+    opClasses = minorMakeOpClassSet(["InstPrefetch", "System"])
     opLat = 1
 
 
@@ -433,7 +486,10 @@ class BaseMinorCPU(BaseCPU):
     )
 
     branchPred = Param.BranchPredictor(
-        TournamentBP(numThreads=Parent.numThreads), "Branch Predictor"
+        BranchPredictor(
+            conditionalBranchPred=TournamentBP(numThreads=Parent.numThreads)
+        ),
+        "Branch Predictor",
     )
 
     def addCheckerCpu(self):

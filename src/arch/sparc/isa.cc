@@ -39,6 +39,7 @@
 #include "base/trace.hh"
 #include "cpu/base.hh"
 #include "cpu/thread_context.hh"
+#include "debug/MatRegs.hh"
 #include "debug/Timer.hh"
 #include "params/SparcISA.hh"
 
@@ -73,17 +74,19 @@ RegClass vecRegClass(VecRegClass, VecRegClassName, 1, debug::IntRegs);
 RegClass vecElemClass(VecElemClass, VecElemClassName, 2, debug::IntRegs);
 RegClass vecPredRegClass(VecPredRegClass, VecPredRegClassName, 1,
         debug::IntRegs);
+RegClass matRegClass(MatRegClass, MatRegClassName, 0, debug::MatRegs);
 RegClass ccRegClass(CCRegClass, CCRegClassName, 0, debug::IntRegs);
 
 } // anonymous namespace
 
-ISA::ISA(const Params &p) : BaseISA(p)
+ISA::ISA(const Params &p) : BaseISA(p, "sparc")
 {
     _regClasses.push_back(&flatIntRegClass);
     _regClasses.push_back(&floatRegClass);
     _regClasses.push_back(&vecRegClass);
     _regClasses.push_back(&vecElemClass);
     _regClasses.push_back(&vecPredRegClass);
+    _regClasses.push_back(&matRegClass);
     _regClasses.push_back(&ccRegClass);
     _regClasses.push_back(&miscRegClass);
 
@@ -841,6 +844,8 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
 void
 ISA::serialize(CheckpointOut &cp) const
 {
+    BaseISA::serialize(cp);
+
     SERIALIZE_SCALAR(asi);
     SERIALIZE_SCALAR(tick);
     SERIALIZE_SCALAR(fprs);
@@ -950,15 +955,15 @@ ISA::unserialize(CheckpointIn &cp)
     UNSERIALIZE_SCALAR(hstick_cmp);
 
     if (tick_cmp) {
-        tickCompare = new TickCompareEvent(this);
+        tickCompare = new TickCompareEvent(*this);
         schedule(tickCompare, tick_cmp);
     }
     if (stick_cmp)  {
-        sTickCompare = new STickCompareEvent(this);
+        sTickCompare = new STickCompareEvent(*this);
         schedule(sTickCompare, stick_cmp);
     }
     if (hstick_cmp)  {
-        hSTickCompare = new HSTickCompareEvent(this);
+        hSTickCompare = new HSTickCompareEvent(*this);
         schedule(hSTickCompare, hstick_cmp);
     }
 }

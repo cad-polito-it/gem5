@@ -350,7 +350,11 @@ class DRAMInterface : public MemInterface
         Rank(const DRAMInterfaceParams &_p, int _rank,
              DRAMInterface& _dram);
 
-        const std::string name() const { return csprintf("%d", rank); }
+        const std::string
+        name() const
+        {
+            return csprintf("%s.rank%d", dram.name(), rank);
+        }
 
         /**
          * Kick off accounting for power and refresh states and
@@ -380,7 +384,18 @@ class DRAMInterface : public MemInterface
          * @param Return true if the rank is idle from a bank
          *        and power point of view
          */
-        bool inPwrIdleState() const { return pwrState == PWR_IDLE; }
+        bool
+        inPwrIdleState() const
+        {
+            // If powerdown is not enabled, then the ranks never go to idle
+            // states. In that case return true here to prevent checkpointing
+            // from getting stuck waiting for DRAM to be idle.
+            if (!dram.enableDRAMPowerdown) {
+                return true;
+            }
+
+            return pwrState == PWR_IDLE;
+        }
 
         /**
          * Trigger a self-refresh exit if there are entries enqueued
@@ -599,8 +614,8 @@ class DRAMInterface : public MemInterface
         statistics::Formula writeRowHitRate;
         statistics::Histogram bytesPerActivate;
         // Number of bytes transferred to/from DRAM
-        statistics::Scalar bytesRead;
-        statistics::Scalar bytesWritten;
+        statistics::Scalar dramBytesRead;
+        statistics::Scalar dramBytesWritten;
 
         // Average bandwidth
         statistics::Formula avgRdBW;

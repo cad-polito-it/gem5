@@ -24,10 +24,12 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from m5.objects.SystemC import SystemC_ScModule
+from m5.objects.Tlm import (
+    TlmInitiatorSocket,
+    TlmTargetSocket,
+)
 from m5.params import *
 from m5.proxy import *
-
-from m5.objects.Tlm import TlmTargetSocket, TlmInitiatorSocket
 
 
 class Gem5ToTlmBridgeBase(SystemC_ScModule):
@@ -60,6 +62,7 @@ class Gem5ToTlmBridge32(Gem5ToTlmBridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::Gem5ToTlmBridge<32>"
     cxx_header = "systemc/tlm_bridge/gem5_to_tlm.hh"
+    override_create = True
 
     tlm = TlmInitiatorSocket(32, "TLM initiator socket")
 
@@ -69,6 +72,7 @@ class Gem5ToTlmBridge64(Gem5ToTlmBridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::Gem5ToTlmBridge<64>"
     cxx_header = "systemc/tlm_bridge/gem5_to_tlm.hh"
+    override_create = True
 
     tlm = TlmInitiatorSocket(64, "TLM initiator socket")
 
@@ -78,6 +82,7 @@ class Gem5ToTlmBridge128(Gem5ToTlmBridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::Gem5ToTlmBridge<128>"
     cxx_header = "systemc/tlm_bridge/gem5_to_tlm.hh"
+    override_create = True
 
     tlm = TlmInitiatorSocket(128, "TLM initiator socket")
 
@@ -87,6 +92,7 @@ class Gem5ToTlmBridge256(Gem5ToTlmBridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::Gem5ToTlmBridge<256>"
     cxx_header = "systemc/tlm_bridge/gem5_to_tlm.hh"
+    override_create = True
 
     tlm = TlmInitiatorSocket(256, "TLM initiator socket")
 
@@ -96,6 +102,7 @@ class Gem5ToTlmBridge512(Gem5ToTlmBridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::Gem5ToTlmBridge<512>"
     cxx_header = "systemc/tlm_bridge/gem5_to_tlm.hh"
+    override_create = True
 
     tlm = TlmInitiatorSocket(512, "TLM initiator socket")
 
@@ -105,6 +112,7 @@ class TlmToGem5Bridge32(TlmToGem5BridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::TlmToGem5Bridge<32>"
     cxx_header = "systemc/tlm_bridge/tlm_to_gem5.hh"
+    override_create = True
 
     tlm = TlmTargetSocket(32, "TLM target socket")
 
@@ -114,6 +122,7 @@ class TlmToGem5Bridge64(TlmToGem5BridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::TlmToGem5Bridge<64>"
     cxx_header = "systemc/tlm_bridge/tlm_to_gem5.hh"
+    override_create = True
 
     tlm = TlmTargetSocket(64, "TLM target socket")
 
@@ -123,6 +132,7 @@ class TlmToGem5Bridge128(TlmToGem5BridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::TlmToGem5Bridge<128>"
     cxx_header = "systemc/tlm_bridge/tlm_to_gem5.hh"
+    override_create = True
 
     tlm = TlmTargetSocket(128, "TLM target socket")
 
@@ -132,6 +142,7 @@ class TlmToGem5Bridge256(TlmToGem5BridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::TlmToGem5Bridge<256>"
     cxx_header = "systemc/tlm_bridge/tlm_to_gem5.hh"
+    override_create = True
 
     tlm = TlmTargetSocket(256, "TLM target socket")
 
@@ -141,5 +152,6 @@ class TlmToGem5Bridge512(TlmToGem5BridgeBase):
     cxx_template_params = ["unsigned int BITWIDTH"]
     cxx_class = "sc_gem5::TlmToGem5Bridge<512>"
     cxx_header = "systemc/tlm_bridge/tlm_to_gem5.hh"
+    override_create = True
 
     tlm = TlmTargetSocket(512, "TLM target socket")

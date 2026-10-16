@@ -1,6 +1,6 @@
-import sys
 import argparse
 import subprocess
+import sys
 from pprint import pprint
 
 import m5
@@ -9,8 +9,10 @@ from m5.util import *
 
 addToPath("../")
 
-from common import MemConfig
-from common import HMC
+from common import (
+    HMC,
+    MemConfig,
+)
 
 
 def add_options(parser):
@@ -58,12 +60,12 @@ def add_options(parser):
     )
 
 
-# considering 4GB HMC device with following parameters
-# hmc_device_size = '4GB'
-# hmc_vault_size = '256MB'
+# considering 4GiB HMC device with following parameters
+# hmc_device_size = '4GiB'
+# hmc_vault_size = '256MiB'
 # hmc_stack_size = 8
 # hmc_bank_in_stack = 2
-# hmc_bank_size = '16MB'
+# hmc_bank_size = '16MiB'
 # hmc_bank_in_vault = 16
 def build_system(options):
     # create the system we are going to simulate

@@ -45,6 +45,7 @@
 #include "base/cast.hh"
 #include "base/trace.hh"
 #include "debug/Decoder.hh"
+#include "params/ArmDecoder.hh"
 #include "sim/full_system.hh"
 
 namespace gem5
@@ -52,8 +53,6 @@ namespace gem5
 
 namespace ArmISA
 {
-
-GenericISA::BasicDecodeCache<Decoder, ExtMachInst> Decoder::defaultCache;
 
 Decoder::Decoder(const ArmDecoderParams &params)
     : InstDecoder(params, &data),
@@ -66,6 +65,10 @@ Decoder::Decoder(const ArmDecoderParams &params)
     // Initialize SVE vector length
     sveLen = (safe_cast<ISA *>(params.isa)->
             getCurSveVecLenInBitsAtReset() >> 7) - 1;
+
+    // Initialize SME vector length
+    smeLen = (safe_cast<ISA *>(params.isa)
+            ->getCurSmeVecLenInBitsAtReset() >> 7) - 1;
 
     if (dvmEnabled) {
         warn_once(

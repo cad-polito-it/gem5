@@ -1,4 +1,4 @@
-# Copyright (c) 2019-2021 ARM Limited
+# Copyright (c) 2019-2021,2023 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -38,12 +38,12 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import re
 from collections import OrderedDict
 
+import slicc.generate.html as html
 from slicc.symbols.Symbol import Symbol
 from slicc.symbols.Var import Var
-import slicc.generate.html as html
-import re
 
 python_class_map = {
     "int": "Int",
@@ -63,7 +63,9 @@ python_class_map = {
     "MessageBuffer": "MessageBuffer",
     "DMASequencer": "DMASequencer",
     "RubyPrefetcher": "RubyPrefetcher",
+    "prefetch::Base": "BasePrefetcher",
     "Cycles": "Cycles",
+    "Addr": "Addr",
 }
 
 
@@ -86,7 +88,7 @@ class StateMachine(Symbol):
                     param.ident,
                     location,
                     param.type_ast.type,
-                    "(*m_%s_ptr)" % param.ident,
+                    f"(*m_{param.ident}_ptr)",
                     {},
                     self,
                 )
@@ -96,7 +98,7 @@ class StateMachine(Symbol):
                     param.ident,
                     location,
                     param.type_ast.type,
-                    "m_%s" % param.ident,
+                    f"m_{param.ident}",
                     {},
                     self,
                 )
@@ -111,8 +113,11 @@ class StateMachine(Symbol):
         self.actions = OrderedDict()
         self.request_types = OrderedDict()
         self.transitions = []
+        self.transitions_per_ev = {}
         self.in_ports = []
         self.functions = []
+        self.event_stats_in_trans = []
+        self.event_stats_out_trans = []
 
         # Data members in the State Machine that have been declared inside
         # the {} machine.  Note that these along with the config params
@@ -127,7 +132,7 @@ class StateMachine(Symbol):
         self.debug_flags.add("RubySlicc")
 
     def __repr__(self):
-        return "[StateMachine: %s]" % self.ident
+        return f"[StateMachine: {self.ident}]"
 
     def addState(self, state):
         assert self.table is None
@@ -136,6 +141,10 @@ class StateMachine(Symbol):
     def addEvent(self, event):
         assert self.table is None
         self.events[event.ident] = event
+        if "in_trans" in event.pairs:
+            self.event_stats_in_trans.append(event)
+        if "out_trans" in event.pairs:
+            self.event_stats_out_trans.append(event)
 
     def addAction(self, action):
         assert self.table is None
@@ -143,15 +152,13 @@ class StateMachine(Symbol):
         # Check for duplicate action
         for other in self.actions.values():
             if action.ident == other.ident:
-                action.warning(
-                    "Duplicate action definition: %s" % action.ident
-                )
-                action.error("Duplicate action definition: %s" % action.ident)
+                action.warning(f"Duplicate action definition: {action.ident}")
+                action.error(f"Duplicate action definition: {action.ident}")
             if action.short == other.short:
-                other.warning("Duplicate action shorthand: %s" % other.ident)
-                other.warning("    shorthand = %s" % other.short)
-                action.warning("Duplicate action shorthand: %s" % action.ident)
-                action.error("    shorthand = %s" % action.short)
+                other.warning(f"Duplicate action shorthand: {other.ident}")
+                other.warning(f"    shorthand = {other.short}")
+                action.warning(f"Duplicate action shorthand: {action.ident}")
+                action.error(f"    shorthand = {action.short}")
 
         self.actions[action.ident] = action
 
@@ -165,6 +172,9 @@ class StateMachine(Symbol):
     def addTransition(self, trans):
         assert self.table is None
         self.transitions.append(trans)
+        if trans.event not in self.transitions_per_ev:
+            self.transitions_per_ev[trans.event] = []
+        self.transitions_per_ev[trans.event].append(trans)
 
     def addInPort(self, var):
         self.in_ports.append(var)
@@ -179,12 +189,12 @@ class StateMachine(Symbol):
         self.objects.append(obj)
 
     def addType(self, type):
-        type_ident = "%s" % type.c_ident
+        type_ident = f"{type.c_ident}"
 
-        if type_ident == "%s_TBE" % self.ident:
+        if type_ident == f"{self.ident}_TBE":
             if self.TBEType != None:
                 self.error(
-                    "Multiple Transaction Buffer types in a " "single machine."
+                    "Multiple Transaction Buffer types in a single machine."
                 )
             self.TBEType = type
 
@@ -216,14 +226,14 @@ class StateMachine(Symbol):
 
             index = (trans.state, trans.event)
             if index in table:
-                table[index].warning("Duplicate transition: %s" % table[index])
-                trans.error("Duplicate transition: %s" % trans)
+                table[index].warning(f"Duplicate transition: {table[index]}")
+                trans.error(f"Duplicate transition: {trans}")
             table[index] = trans
 
         # Look at all actions to make sure we used them all
         for action in self.actions.values():
             if not action.used:
-                error_msg = "Unused action: %s" % action.ident
+                error_msg = f"Unused action: {action.ident}"
                 if "desc" in action:
                     error_msg += ", " + action.desc
                 action.warning(error_msg)
@@ -235,7 +245,7 @@ class StateMachine(Symbol):
         port_to_buf_map = {}
         in_msg_bufs = {}
         for port in self.in_ports:
-            buf_name = "m_%s_ptr" % port.pairs["buffer_expr"].name
+            buf_name = f"m_{port.pairs['buffer_expr'].name}_ptr"
             msg_bufs.append(buf_name)
             port_to_buf_map[port] = msg_bufs.index(buf_name)
             if buf_name not in in_msg_bufs:
@@ -255,19 +265,29 @@ class StateMachine(Symbol):
         code = self.symtab.codeFormatter()
         ident = self.ident
 
-        py_ident = "%s_Controller" % ident
-        c_ident = "%s_Controller" % self.ident
+        protocol = self.symtab.slicc.protocol
+        py_ident = f"{protocol}_{ident}_Controller"
+        c_ident = f"{self.ident}_Controller"
+        gen_filename = f"{protocol}/{py_ident}"
 
         code(
             """
 from m5.params import *
 from m5.SimObject import SimObject
 from m5.objects.Controller import RubyController
+"""
+        )
+
+        if "BasePrefetcher" in python_class_map.values():
+            code("from m5.objects.Prefetcher import BasePrefetcher")
+
+        code(
+            """
 
 class $py_ident(RubyController):
     type = '$py_ident'
-    cxx_header = 'mem/ruby/protocol/${c_ident}.hh'
-    cxx_class = 'gem5::ruby::$py_ident'
+    cxx_header = 'mem/ruby/protocol/${protocol}/${c_ident}.hh'
+    cxx_class = 'gem5::ruby::$protocol::$c_ident'
 """
         )
         code.indent()
@@ -292,20 +312,48 @@ class $py_ident(RubyController):
                 )
 
         code.dedent()
-        code.write(path, "%s.py" % py_ident)
+
+        # Needed for backwards compatibility. If you have exactly 1 protocol
+        # (i.e., buildEnv["PROTOCOL"] is not MULTIPLE), then for the one
+        # type of machine that matches this (sole) protocol, you can create an
+        # alias to the new name. This is only needed if using script that
+        # reference Ruby.py. When that is deprecated, this code can be removed
+        code(
+            """
+
+from m5.defines import buildEnv
+from m5.util import warn
+
+if buildEnv["PROTOCOL"] == "${protocol}":
+    class ${c_ident}(${py_ident}):
+        def __init__(self, *args, **kwargs):
+            warn(
+                "${c_ident} is deprecated. Use %s_${c_ident} instead",
+                buildEnv['PROTOCOL']
+            )
+            super().__init__(*args, **kwargs)
+"""
+        )
+
+        code.write(path, f"{gen_filename}.py")
 
     def printControllerHH(self, path):
         """Output the method declarations for the class declaration"""
         code = self.symtab.codeFormatter()
         ident = self.ident
-        c_ident = "%s_Controller" % self.ident
+        c_ident = f"{self.ident}_Controller"
+
+        protocol = self.symtab.slicc.protocol
+        header_string = protocol + "_" + self.ident
+        gen_filename = f"{protocol}/{c_ident}"
+        py_ident = f"{protocol}_{ident}_Controller"
 
         code(
             """
 // Created by slicc definition of Module "${{self.short}}"
 
-#ifndef __${ident}_CONTROLLER_HH__
-#define __${ident}_CONTROLLER_HH__
+#ifndef __${header_string}_CONTROLLER_HH__
+#define __${header_string}_CONTROLLER_HH__
 
 #include <iostream>
 #include <sstream>
@@ -313,9 +361,9 @@ class $py_ident(RubyController):
 
 #include "mem/ruby/common/Consumer.hh"
 #include "mem/ruby/protocol/TransitionResult.hh"
-#include "mem/ruby/protocol/Types.hh"
+#include "mem/ruby/protocol/${protocol}/Types.hh"
 #include "mem/ruby/slicc_interface/AbstractController.hh"
-#include "params/$c_ident.hh"
+#include "params/$py_ident.hh"
 
 """
         )
@@ -323,7 +371,18 @@ class $py_ident(RubyController):
         seen_types = set()
         for var in self.objects:
             if var.type.ident not in seen_types and not var.type.isPrimitive:
-                code('#include "mem/ruby/protocol/${{var.type.c_ident}}.hh"')
+                if var.type.shared or var.type.isExternal:
+                    code(
+                        """
+#include "mem/ruby/protocol/${{var.type.c_ident}}.hh"
+"""
+                    )
+                else:
+                    code(
+                        """
+#include "mem/ruby/protocol/${{protocol}}/${{var.type.c_ident}}.hh"
+"""
+                    )
                 seen_types.add(var.type.ident)
 
         # for adding information to the protocol debug trace
@@ -335,14 +394,16 @@ namespace gem5
 namespace ruby
 {
 
+namespace ${protocol}
+{
+
 extern std::stringstream ${ident}_transitionComment;
 
 class $c_ident : public AbstractController
 {
   public:
-    typedef ${c_ident}Params Params;
+    typedef ${py_ident}Params Params;
     $c_ident(const Params &p);
-    static int getNumControllers();
     void init();
 
     MessageBuffer *getMandatoryQueue() const;
@@ -439,9 +500,8 @@ int m_counters[${ident}_State_NUM][${ident}_Event_NUM];
 int m_event_counters[${ident}_Event_NUM];
 bool m_possible[${ident}_State_NUM][${ident}_Event_NUM];
 
-static std::vector<statistics::Vector *> eventVec;
-static std::vector<std::vector<statistics::Vector *> > transVec;
-static int m_num_controllers;
+std::vector<statistics::Vector *> eventVec;
+std::vector<std::vector<statistics::Vector *> > transVec;
 
 // Internal functions
 """
@@ -522,21 +582,23 @@ void unset_tbe(${{self.TBEType.c_ident}}*& m_tbe_ptr);
             """
 };
 
+} // namespace ${protocol}
 } // namespace ruby
 } // namespace gem5
 
-#endif // __${ident}_CONTROLLER_H__
+#endif // __${header_string}_CONTROLLER_H__
 """
         )
 
-        code.write(path, "%s.hh" % c_ident)
+        code.write(path, f"{gen_filename}.hh")
 
     def printControllerCC(self, path, includes):
         """Output the actions for performing the actions"""
 
         code = self.symtab.codeFormatter()
         ident = self.ident
-        c_ident = "%s_Controller" % self.ident
+        c_ident = f"{self.ident}_Controller"
+        gen_filename = f"{self.symtab.slicc.protocol}/{self.ident}"
 
         # Unfortunately, clang compilers will throw a "call to function ...
         # that is neither visible in the template definition nor found by
@@ -587,10 +649,10 @@ void unset_tbe(${{self.TBEType.c_ident}}*& m_tbe_ptr);
         code(
             """
 #include "mem/ruby/network/Network.hh"
-#include "mem/ruby/protocol/${ident}_Controller.hh"
-#include "mem/ruby/protocol/${ident}_Event.hh"
-#include "mem/ruby/protocol/${ident}_State.hh"
-#include "mem/ruby/protocol/Types.hh"
+#include "mem/ruby/protocol/${gen_filename}_Controller.hh"
+#include "mem/ruby/protocol/${gen_filename}_Event.hh"
+#include "mem/ruby/protocol/${gen_filename}_State.hh"
+#include "mem/ruby/protocol/${protocol}/Types.hh"
 #include "mem/ruby/system/RubySystem.hh"
 
 """
@@ -602,7 +664,18 @@ void unset_tbe(${{self.TBEType.c_ident}}*& m_tbe_ptr);
         seen_types = set()
         for var in self.objects:
             if var.type.ident not in seen_types and not var.type.isPrimitive:
-                code('#include "mem/ruby/protocol/${{var.type.c_ident}}.hh"')
+                if var.type.shared or var.type.isExternal:
+                    code(
+                        """
+#include "mem/ruby/protocol/${{var.type.c_ident}}.hh"
+"""
+                    )
+                else:
+                    code(
+                        """
+#include "mem/ruby/protocol/${{protocol}}/${{var.type.c_ident}}.hh"
+"""
+                    )
             seen_types.add(var.type.ident)
 
         num_in_ports = len(self.in_ports)
@@ -615,9 +688,8 @@ namespace gem5
 namespace ruby
 {
 
-int $c_ident::m_num_controllers = 0;
-std::vector<statistics::Vector *>  $c_ident::eventVec;
-std::vector<std::vector<statistics::Vector *> >  $c_ident::transVec;
+namespace ${protocol}
+{
 
 // for adding information to the protocol debug trace
 std::stringstream ${ident}_transitionComment;
@@ -634,8 +706,9 @@ $c_ident::$c_ident(const Params &p)
 {
     m_machineID.type = MachineType_${ident};
     m_machineID.num = m_version;
-    m_num_controllers++;
-    p.ruby_system->registerAbstractController(this);
+    p.ruby_system->m_num_controllers[MachineType_${ident}]++;
+    p.ruby_system->registerAbstractController(this, std::make_unique<${protocol}ProtocolInfo>());
+    m_ruby_system = p.ruby_system;
 
     m_in_ports = $num_in_ports;
 """
@@ -689,7 +762,7 @@ void
 $c_ident::initNetQueues()
 {
     MachineType machine_type = string_to_MachineType("${{self.ident}}");
-    [[maybe_unused]] int base = MachineType_base_number(machine_type);
+    [[maybe_unused]] int base = m_ruby_system->MachineType_base_number(machine_type);
 
 """
         )
@@ -701,7 +774,7 @@ $c_ident::initNetQueues()
         vnet_dir_set = set()
 
         for var in self.config_parameters:
-            vid = "m_%s_ptr" % var.ident
+            vid = f"m_{var.ident}_ptr"
             if "network" in var:
                 vtype = var.type_ast.type
                 code("assert($vid != NULL);")
@@ -742,7 +815,7 @@ $c_ident::init()
 
         for var in self.objects:
             vtype = var.type
-            vid = "m_%s_ptr" % var.ident
+            vid = f"m_{var.ident}_ptr"
             if "network" not in var:
                 # Not a network port object
                 if "primitive" in vtype:
@@ -752,10 +825,14 @@ $c_ident::init()
                 else:
                     # Normal Object
                     th = var.get("template", "")
-                    expr = "%s  = new %s%s" % (vid, vtype.c_ident, th)
+                    expr = f"{vid}  = new {vtype.c_ident}{th}"
                     args = ""
                     if "non_obj" not in vtype and not vtype.isEnumeration:
                         args = var.get("constructor", "")
+
+                    if args == "" and "DataBlock" in vtype.c_ident:
+                        # DataBlock constructor requires a blk_size argument
+                        args = "m_ruby_system->getBlockSizeBytes()"
 
                     code("$expr($args);")
                     code("assert($vid != NULL);")
@@ -763,8 +840,22 @@ $c_ident::init()
                     if "default" in var:
                         code('*$vid = ${{var["default"]}}; // Object default')
                     elif "default" in vtype:
-                        comment = "Type %s default" % vtype.ident
+                        comment = f"Type {vtype.ident} default"
                         code('*$vid = ${{vtype["default"]}}; // $comment')
+
+                    # For objects that require a pointer to RubySystem,
+                    # set the value here.
+                    if vtype.c_ident in (
+                        "NetDest",
+                        "PerfectCacheMemory",
+                        "TBETable",
+                    ):
+                        code(f"(*{vid}).setRubySystem(m_ruby_system);")
+
+        for param in self.config_parameters:
+            if param.type_ast.type.ident == "CacheMemory":
+                assert param.pointer
+                code(f"m_{param.ident}_ptr->setRubySystem(m_ruby_system);")
 
         # Set the prefetchers
         code()
@@ -787,8 +878,8 @@ $c_ident::init()
 
             # Only possible if it is not a 'z' case
             if not stall:
-                state = "%s_State_%s" % (self.ident, trans.state.ident)
-                event = "%s_Event_%s" % (self.ident, trans.event.ident)
+                state = f"{self.ident}_State_{trans.state.ident}"
+                event = f"{self.ident}_Event_{trans.event.ident}"
                 code("possibleTransition($state, $event);")
 
         code.dedent()
@@ -819,19 +910,19 @@ $c_ident::init()
         for param in self.config_parameters:
             if param.ident == "sequencer":
                 assert param.pointer
-                seq_ident = "m_%s_ptr" % param.ident
+                seq_ident = f"m_{param.ident}_ptr"
 
         dma_seq_ident = "NULL"
         for param in self.config_parameters:
             if param.ident == "dma_sequencer":
                 assert param.pointer
-                dma_seq_ident = "m_%s_ptr" % param.ident
+                dma_seq_ident = f"m_{param.ident}_ptr"
 
         coal_ident = "NULL"
         for param in self.config_parameters:
             if param.ident == "coalescer":
                 assert param.pointer
-                coal_ident = "m_%s_ptr" % param.ident
+                coal_ident = f"m_{param.ident}_ptr"
 
         if seq_ident != "NULL":
             code(
@@ -932,7 +1023,9 @@ $c_ident::regStats()
                 "${c_ident}." + ${ident}_Event_to_string(event);
             statistics::Vector *t =
                 new statistics::Vector(profilerStatsPtr, stat_name.c_str());
-            t->init(m_num_controllers);
+            int num_controllers =
+                m_ruby_system->m_num_controllers[MachineType_${ident}];
+            t->init(num_controllers);
             t->flags(statistics::pdf | statistics::total |
                 statistics::oneline | statistics::nozero);
 
@@ -951,7 +1044,9 @@ $c_ident::regStats()
                     "." + ${ident}_Event_to_string(event);
                 statistics::Vector *t = new statistics::Vector(
                     profilerStatsPtr, stat_name.c_str());
-                t->init(m_num_controllers);
+                int num_controllers =
+                    m_ruby_system->m_num_controllers[MachineType_${ident}];
+                t->init(num_controllers);
                 t->flags(statistics::pdf | statistics::total |
                     statistics::oneline | statistics::nozero);
                 transVec[state].push_back(t);
@@ -959,53 +1054,91 @@ $c_ident::regStats()
         }
     }
 
-    for (${ident}_Event event = ${ident}_Event_FIRST;
-                 event < ${ident}_Event_NUM; ++event) {
+"""
+        )
+        # check if Events/States have profiling qualifiers flags for
+        # inTransLatHist and outTransLatHist stats.
+        ev_ident_list = [
+            f"{ident}_Event_{ev.ident}" for ev in self.event_stats_out_trans
+        ]
+        ev_ident_str = "{" + ",".join(ev_ident_list) + "}"
+        code(
+            """
+    const std::vector<${ident}_Event> out_trans_evs = ${ev_ident_str};
+"""
+        )
+        ev_ident_list = [
+            f"{ident}_Event_{ev.ident}" for ev in self.event_stats_in_trans
+        ]
+        ev_ident_str = "{" + ",".join(ev_ident_list) + "}"
+        code(
+            """
+    const std::vector<${ident}_Event> in_trans_evs = ${ev_ident_str};
+"""
+        )
+        kv_ident_list = []
+        for ev in self.event_stats_in_trans:
+            key_ident = f"{ident}_Event_{ev.ident}"
+            val_ident_lst = [
+                f"{ident}_State_{trans.state.ident}"
+                for trans in self.transitions_per_ev[ev]
+            ]
+            val_ident_str = "{" + ",".join(val_ident_lst) + "}"
+            kv_ident_list.append(f"{{{key_ident}, {val_ident_str}}}")
+        key_ident_str = "{" + ",".join(kv_ident_list) + "}"
+        code(
+            """
+    const std::unordered_map<${ident}_Event, std::vector<${ident}_State>>
+                                in_trans_evs_states = ${key_ident_str};
+"""
+        )
+        code(
+            """
+
+    for (const auto event : out_trans_evs) {
         std::string stat_name =
             "outTransLatHist." + ${ident}_Event_to_string(event);
         statistics::Histogram* t =
             new statistics::Histogram(&stats, stat_name.c_str());
-        stats.outTransLatHist.push_back(t);
+        stats.outTransLatHist[event] = t;
         t->init(5);
         t->flags(statistics::pdf | statistics::total |
                  statistics::oneline | statistics::nozero);
 
         statistics::Scalar* r = new statistics::Scalar(&stats,
                                              (stat_name + ".retries").c_str());
-        stats.outTransLatHistRetries.push_back(r);
+        stats.outTransRetryCnt[event] = r;
         r->flags(statistics::nozero);
     }
 
-    for (${ident}_Event event = ${ident}_Event_FIRST;
-                 event < ${ident}_Event_NUM; ++event) {
-        std::string stat_name = "inTransLatHist." +
-                                ${ident}_Event_to_string(event);
+    for (const auto event : in_trans_evs) {
+        std::string stat_name =
+            "inTransLatHist." + ${ident}_Event_to_string(event);
+        statistics::Histogram* t =
+            new statistics::Histogram(&stats, stat_name.c_str());
+        stats.inTransLatHist[event] = t;
+        t->init(5);
+        t->flags(statistics::pdf | statistics::total |
+                 statistics::oneline | statistics::nozero);
+
         statistics::Scalar* r = new statistics::Scalar(&stats,
-                                             (stat_name + ".total").c_str());
-        stats.inTransLatTotal.push_back(r);
+                                             (stat_name + ".retries").c_str());
+        stats.inTransRetryCnt[event] = r;
         r->flags(statistics::nozero);
 
-        r = new statistics::Scalar(&stats,
-                              (stat_name + ".retries").c_str());
-        stats.inTransLatRetries.push_back(r);
-        r->flags(statistics::nozero);
-
-        stats.inTransLatHist.emplace_back();
-        for (${ident}_State initial_state = ${ident}_State_FIRST;
-             initial_state < ${ident}_State_NUM; ++initial_state) {
-            stats.inTransLatHist.back().emplace_back();
+        auto &src_states = stats.inTransStateChanges[event];
+        for (const auto initial_state : in_trans_evs_states.at(event)) {
+            auto &dst_vector = src_states[initial_state];
             for (${ident}_State final_state = ${ident}_State_FIRST;
                  final_state < ${ident}_State_NUM; ++final_state) {
                 std::string stat_name = "inTransLatHist." +
                     ${ident}_Event_to_string(event) + "." +
                     ${ident}_State_to_string(initial_state) + "." +
-                    ${ident}_State_to_string(final_state);
-                statistics::Histogram* t =
-                    new statistics::Histogram(&stats, stat_name.c_str());
-                stats.inTransLatHist.back().back().push_back(t);
-                t->init(5);
-                t->flags(statistics::pdf | statistics::total |
-                         statistics::oneline | statistics::nozero);
+                    ${ident}_State_to_string(final_state) + ".total";
+                statistics::Scalar* t =
+                    new statistics::Scalar(&stats, stat_name.c_str());
+                t->flags(statistics::nozero);
+                dst_vector.push_back(t);
             }
         }
     }
@@ -1014,9 +1147,12 @@ $c_ident::regStats()
 void
 $c_ident::collateStats()
 {
+    int num_controllers =
+        m_ruby_system->m_num_controllers[MachineType_${ident}];
+
     for (${ident}_Event event = ${ident}_Event_FIRST;
          event < ${ident}_Event_NUM; ++event) {
-        for (unsigned int i = 0; i < m_num_controllers; ++i) {
+        for (unsigned int i = 0; i < num_controllers; ++i) {
             RubySystem *rs = params().ruby_system;
             std::map<uint32_t, AbstractController *>::iterator it =
                      rs->m_abstract_controls[MachineType_${ident}].find(i);
@@ -1032,7 +1168,7 @@ $c_ident::collateStats()
         for (${ident}_Event event = ${ident}_Event_FIRST;
              event < ${ident}_Event_NUM; ++event) {
 
-            for (unsigned int i = 0; i < m_num_controllers; ++i) {
+            for (unsigned int i = 0; i < num_controllers; ++i) {
                 RubySystem *rs = params().ruby_system;
                 std::map<uint32_t, AbstractController *>::iterator it =
                          rs->m_abstract_controls[MachineType_${ident}].find(i);
@@ -1075,12 +1211,6 @@ $c_ident::getTransitionCount(${ident}_State state,
                              ${ident}_Event event)
 {
     return m_counters[state][event];
-}
-
-int
-$c_ident::getNumControllers()
-{
-    return m_num_controllers;
 }
 
 MessageBuffer*
@@ -1133,6 +1263,7 @@ void
 $c_ident::set_cache_entry(${{self.EntryType.c_ident}}*& m_cache_entry_ptr, AbstractCacheEntry* m_new_cache_entry)
 {
   m_cache_entry_ptr = (${{self.EntryType.c_ident}}*)m_new_cache_entry;
+  m_cache_entry_ptr->setRubySystem(m_ruby_system);
 }
 
 void
@@ -1276,13 +1407,13 @@ $c_ident::functionalWriteBuffers(PacketPtr& pkt)
         for var in self.objects:
             vtype = var.type
             if vtype.isBuffer:
-                vid = "m_%s_ptr" % var.ident
+                vid = f"m_{var.ident}_ptr"
                 code("num_functional_writes += $vid->functionalWrite(pkt);")
 
         for var in self.config_parameters:
             vtype = var.type_ast.type
             if vtype.isBuffer:
-                vid = "m_%s_ptr" % var.ident
+                vid = f"m_{var.ident}_ptr"
                 code("num_functional_writes += $vid->functionalWrite(pkt);")
 
         code(
@@ -1303,13 +1434,13 @@ $c_ident::functionalReadBuffers(PacketPtr& pkt)
         for var in self.objects:
             vtype = var.type
             if vtype.isBuffer:
-                vid = "m_%s_ptr" % var.ident
+                vid = f"m_{var.ident}_ptr"
                 code("if ($vid->functionalRead(pkt)) return true;")
 
         for var in self.config_parameters:
             vtype = var.type_ast.type
             if vtype.isBuffer:
-                vid = "m_%s_ptr" % var.ident
+                vid = f"m_{var.ident}_ptr"
                 code("if ($vid->functionalRead(pkt)) return true;")
 
         code(
@@ -1326,13 +1457,13 @@ $c_ident::functionalReadBuffers(PacketPtr& pkt, WriteMask &mask)
         for var in self.objects:
             vtype = var.type
             if vtype.isBuffer:
-                vid = "m_%s_ptr" % var.ident
+                vid = f"m_{var.ident}_ptr"
                 code("if ($vid->functionalRead(pkt, mask)) read = true;")
 
         for var in self.config_parameters:
             vtype = var.type_ast.type
             if vtype.isBuffer:
-                vid = "m_%s_ptr" % var.ident
+                vid = f"m_{var.ident}_ptr"
                 code("if ($vid->functionalRead(pkt, mask)) read = true;")
 
         code(
@@ -1340,18 +1471,20 @@ $c_ident::functionalReadBuffers(PacketPtr& pkt, WriteMask &mask)
     return read;
 }
 
+} // namespace ${protocol}
 } // namespace ruby
 } // namespace gem5
 """
         )
 
-        code.write(path, "%s.cc" % c_ident)
+        code.write(path, f"{gen_filename}_Controller.cc")
 
     def printCWakeup(self, path, includes):
         """Output the wakeup loop for the events"""
 
         code = self.symtab.codeFormatter()
         ident = self.ident
+        gen_filename = f"{self.symtab.slicc.protocol}/{self.ident}"
 
         outputRequest_types = True
         if len(self.request_types) == 0:
@@ -1377,19 +1510,23 @@ $c_ident::functionalReadBuffers(PacketPtr& pkt, WriteMask &mask)
             code('#include "debug/${{f}}.hh"')
         code(
             """
-#include "mem/ruby/protocol/${ident}_Controller.hh"
-#include "mem/ruby/protocol/${ident}_Event.hh"
-#include "mem/ruby/protocol/${ident}_State.hh"
+#include "mem/ruby/protocol/${gen_filename}_Controller.hh"
+#include "mem/ruby/protocol/${gen_filename}_Event.hh"
+#include "mem/ruby/protocol/${gen_filename}_State.hh"
 
 """
         )
 
         if outputRequest_types:
-            code('''#include "mem/ruby/protocol/${ident}_RequestType.hh"''')
+            code(
+                """
+#include "mem/ruby/protocol/${protocol}/${ident}_RequestType.hh"
+"""
+            )
 
         code(
             """
-#include "mem/ruby/protocol/Types.hh"
+#include "mem/ruby/protocol/${protocol}/Types.hh"
 #include "mem/ruby/system/RubySystem.hh"
 
 """
@@ -1406,6 +1543,9 @@ namespace gem5
 {
 
 namespace ruby
+{
+
+namespace ${protocol}
 {
 
 void
@@ -1491,18 +1631,20 @@ ${ident}_Controller::wakeup()
     }
 }
 
+} // namespace ${protocol}
 } // namespace ruby
 } // namespace gem5
 """
         )
 
-        code.write(path, "%s_Wakeup.cc" % self.ident)
+        code.write(path, f"{gen_filename}_Wakeup.cc")
 
     def printCSwitch(self, path):
         """Output switch statement for transition table"""
 
         code = self.symtab.codeFormatter()
         ident = self.ident
+        gen_filename = f"{self.symtab.slicc.protocol}/{self.ident}"
 
         code(
             """
@@ -1514,10 +1656,10 @@ ${ident}_Controller::wakeup()
 #include "base/trace.hh"
 #include "debug/ProtocolTrace.hh"
 #include "debug/RubyGenerated.hh"
-#include "mem/ruby/protocol/${ident}_Controller.hh"
-#include "mem/ruby/protocol/${ident}_Event.hh"
-#include "mem/ruby/protocol/${ident}_State.hh"
-#include "mem/ruby/protocol/Types.hh"
+#include "mem/ruby/protocol/${gen_filename}_Controller.hh"
+#include "mem/ruby/protocol/${gen_filename}_Event.hh"
+#include "mem/ruby/protocol/${gen_filename}_State.hh"
+#include "mem/ruby/protocol/${protocol}/Types.hh"
 #include "mem/ruby/system/RubySystem.hh"
 
 #define HASH_FUN(state, event)  ((int(state)*${ident}_Event_NUM)+int(event))
@@ -1529,6 +1671,9 @@ namespace gem5
 {
 
 namespace ruby
+{
+
+namespace ${protocol}
 {
 
 TransitionResult
@@ -1685,7 +1830,7 @@ ${ident}_Controller::doTransitionWorker(${ident}_Event event,
         cases = OrderedDict()
 
         for trans in self.transitions:
-            case_string = "%s_State_%s, %s_Event_%s" % (
+            case_string = "{}_State_{}, {}_Event_{}".format(
                 self.ident,
                 trans.state.ident,
                 self.ident,
@@ -1720,22 +1865,19 @@ ${ident}_Controller::doTransitionWorker(${ident}_Event event,
             case_sorter = []
             res = trans.resources
             for key, val in res.items():
-                val = """
-if (!%s.areNSlotsAvailable(%s, clockEdge()))
+                val = f"""
+if (!{key.code}.areNSlotsAvailable({val}, clockEdge()))
     return TransitionResult_ResourceStall;
-""" % (
-                    key.code,
-                    val,
-                )
+"""
                 case_sorter.append(val)
 
             # Check all of the request_types for resource constraints
             for request_type in request_types:
                 val = """
-if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
+if (!checkResourceAvailable({}_RequestType_{}, addr)) {{
     return TransitionResult_ResourceStall;
-}
-""" % (
+}}
+""".format(
                     self.ident,
                     request_type.ident,
                 )
@@ -1807,11 +1949,12 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
     return TransitionResult_Valid;
 }
 
+} // namespace ${protocol}
 } // namespace ruby
 } // namespace gem5
 """
         )
-        code.write(path, "%s_Transitions.cc" % self.ident)
+        code.write(path, f"{gen_filename}_Transitions.cc")
 
     # **************************
     # ******* HTML Files *******
@@ -1838,19 +1981,19 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
 
         # Generate action descriptions
         for action in self.actions.values():
-            name = "%s_action_%s.html" % (self.ident, action.ident)
+            name = f"{self.ident}_action_{action.ident}.html"
             code = html.createSymbol(action, "Action")
             code.write(path, name)
 
         # Generate state descriptions
         for state in self.states.values():
-            name = "%s_State_%s.html" % (self.ident, state.ident)
+            name = f"{self.ident}_State_{state.ident}.html"
             code = html.createSymbol(state, "State")
             code.write(path, name)
 
         # Generate event descriptions
         for event in self.events.values():
-            name = "%s_Event_%s.html" % (self.ident, event.ident)
+            name = f"{self.ident}_Event_{event.ident}.html"
             code = html.createSymbol(event, "Event")
             code.write(path, name)
 
@@ -1891,7 +2034,7 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
         )
 
         for event in self.events.values():
-            href = "%s_Event_%s.html" % (self.ident, event.ident)
+            href = f"{self.ident}_Event_{event.ident}.html"
             ref = self.frameRef(href, "Status", href, "1", event.short)
             code("<TH bgcolor=white>$ref</TH>")
 
@@ -1904,8 +2047,8 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
             else:
                 color = "white"
 
-            click = "%s_table_%s.html" % (self.ident, state.ident)
-            over = "%s_State_%s.html" % (self.ident, state.ident)
+            click = f"{self.ident}_table_{state.ident}.html"
+            over = f"{self.ident}_State_{state.ident}.html"
             text = html.formatShorthand(state.short)
             ref = self.frameRef(click, "Table", over, "1", state.short)
             code(
@@ -1955,7 +2098,7 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
 
                 code("<TD bgcolor=$color>")
                 for action in trans.actions:
-                    href = "%s_action_%s.html" % (self.ident, action.ident)
+                    href = f"{self.ident}_action_{action.ident}.html"
                     ref = self.frameRef(
                         href, "Status", href, "1", action.short
                     )
@@ -1963,8 +2106,8 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
                 if next != state:
                     if trans.actions:
                         code("/")
-                    click = "%s_table_%s.html" % (self.ident, next.ident)
-                    over = "%s_State_%s.html" % (self.ident, next.ident)
+                    click = f"{self.ident}_table_{next.ident}.html"
+                    over = f"{self.ident}_State_{next.ident}.html"
                     ref = self.frameRef(click, "Table", over, "1", next.short)
                     code("$ref")
                 code("</TD>")
@@ -1975,8 +2118,8 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
             else:
                 color = "white"
 
-            click = "%s_table_%s.html" % (self.ident, state.ident)
-            over = "%s_State_%s.html" % (self.ident, state.ident)
+            click = f"{self.ident}_table_{state.ident}.html"
+            over = f"{self.ident}_State_{state.ident}.html"
             ref = self.frameRef(click, "Table", over, "1", state.short)
             code(
                 """
@@ -1993,7 +2136,7 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
         )
 
         for event in self.events.values():
-            href = "%s_Event_%s.html" % (self.ident, event.ident)
+            href = f"{self.ident}_Event_{event.ident}.html"
             ref = self.frameRef(href, "Status", href, "1", event.short)
             code("<TH bgcolor=white>$ref</TH>")
         code(
@@ -2005,9 +2148,9 @@ if (!checkResourceAvailable(%s_RequestType_%s, addr)) {
         )
 
         if active_state:
-            name = "%s_table_%s.html" % (self.ident, active_state.ident)
+            name = f"{self.ident}_table_{active_state.ident}.html"
         else:
-            name = "%s_table.html" % self.ident
+            name = f"{self.ident}_table.html"
         code.write(path, name)
 
 

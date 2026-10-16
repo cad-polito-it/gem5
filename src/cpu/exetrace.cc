@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 ARM Limited
+ * Copyright (c) 2017, 2019, 2023 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -43,6 +43,7 @@
 #include <iomanip>
 #include <sstream>
 
+#include "arch/generic/mmu.hh"
 #include "base/loader/symtab.hh"
 #include "cpu/base.hh"
 #include "cpu/static_inst.hh"
@@ -75,17 +76,18 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
     if (debug::ExecThread)
         outs << "T" << thread->threadId() << " : ";
 
-    Addr cur_pc = pc->instAddr();
+    Addr cur_pc = thread->getMMUPtr()->getValidAddr(
+        pc->instAddr(), thread, BaseMMU::Execute);
     loader::SymbolTable::const_iterator it;
     ccprintf(outs, "%#x", cur_pc);
     if (debug::ExecSymbol && (!FullSystem || !in_user_mode) &&
             (it = loader::debugSymbolTable.findNearest(cur_pc)) !=
                 loader::debugSymbolTable.end()) {
-        Addr delta = cur_pc - it->address;
+        Addr delta = cur_pc - it->address();
         if (delta)
-            ccprintf(outs, " @%s+%d", it->name, delta);
+            ccprintf(outs, " @%s+%d", it->name(), delta);
         else
-            ccprintf(outs, " @%s", it->name);
+            ccprintf(outs, " @%s", it->name());
     }
 
     if (inst->isMicroop()) {
@@ -101,7 +103,7 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
     //
 
     outs << std::setw(26) << std::left;
-    outs << inst->disassemble(cur_pc, &loader::debugSymbolTable);
+    outs << tracer.disassemble(inst, *pc, &loader::debugSymbolTable);
 
     if (ran) {
         outs << " : ";
@@ -115,10 +117,15 @@ ExeTracerRecord::traceInst(const StaticInstPtr &inst, bool ran)
         }
 
         if (debug::ExecResult && dataStatus != DataInvalid) {
-            if (dataStatus == DataReg)
-                ccprintf(outs, " D=%s", data.asReg.asString());
-            else
+            if (dataStatus == DataReg) {
+                if (vectorLengthInBytes > 0 && inst->isVector()) {
+                    outs << " D=" << data.asReg.asString(vectorLengthInBytes);
+                } else {
+                    ccprintf(outs, " D=%s", data.asReg.asString());
+                }
+            } else {
                 ccprintf(outs, " D=%#018x", data.asInt);
+            }
         }
 
         if (debug::ExecEffAddr && getMemValid())

@@ -63,6 +63,25 @@ def template LoadStoreConstructor {{
 }};
 
 let {{
+def getAlignFlag(iop):
+    align_map = {
+      'uint8_t': 'MMU::ByteAlign',
+      'int8_t': 'MMU::ByteAlign',
+      'uint16_t': 'MMU::HalfWordAlign',
+      'int16_t': 'MMU::HalfWordAlign',
+      'uint32_t': 'MMU::WordAlign',
+      'int32_t': 'MMU::WordAlign',
+      'uint64_t': 'MMU::DoubleWordAlign',
+      'int64_t': 'MMU::DoubleWordAlign',
+    }
+    flag = ''
+    operands = iop.operands
+    if operands.bases.get('Mem'):
+        Mem = operands.bases['Mem']
+        flag = align_map.get(Mem.ctype)
+
+    return flag
+
 def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
         inst_flags, base_class, postacc_code='', decode_template=BasicDecode,
         exec_template_base=''):
@@ -75,19 +94,25 @@ def LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
          'memacc_code': memacc_code, 'postacc_code': postacc_code },
         inst_flags)
 
+    mem_flags = [ '(Request::%s)' % flag for flag in mem_flags ]
+    align_flag = getAlignFlag(iop)
+    if align_flag:
+        mem_flags.append(align_flag)
     if mem_flags:
-        mem_flags = [ 'Request::%s' % flag for flag in mem_flags ]
         s = '\n\tmemAccessFlags = ' + '|'.join(mem_flags) + ';'
         iop.constructor += s
 
     # select templates
 
+    is_prefetch = "prefetch" in name
+
     fullExecTemplate = eval(exec_template_base + 'Execute')
     initiateAccTemplate = eval(exec_template_base + 'InitiateAcc')
-    completeAccTemplate = eval(exec_template_base + 'CompleteAcc')
+    completeAccTemplate = eval('PrefetchCompleteAcc') if is_prefetch else \
+        eval(exec_template_base + 'CompleteAcc')
 
     # (header_output, decoder_output, decode_block, exec_output)
-    return (LoadStoreDeclare.subst(iop),
+    return (PrefetchDeclare.subst(iop) if is_prefetch else LoadStoreDeclare.subst(iop),
         LoadStoreConstructor.subst(iop),
         decode_template.subst(iop),
         fullExecTemplate.subst(iop) +
@@ -106,9 +131,6 @@ def template LoadExecute {{
         %(op_rd)s;
         %(ea_code)s;
 
-        if (!alignmentOk(xc, EA, sizeof(Mem))) {
-            return std::make_shared<AddressFault>(EA, LOAD_ADDR_MISALIGNED);
-        }
         {
             Fault fault =
                 readMemAtomicLE(xc, traceData, EA, Mem, memAccessFlags);
@@ -135,9 +157,6 @@ def template LoadInitiateAcc {{
         %(op_rd)s;
         %(ea_code)s;
 
-        if (!alignmentOk(xc, EA, sizeof(Mem))) {
-            return std::make_shared<AddressFault>(EA, LOAD_ADDR_MISALIGNED);
-        }
         return initiateMemRead(xc, traceData, EA, Mem, memAccessFlags);
     }
 }};
@@ -172,9 +191,6 @@ def template StoreExecute {{
 
         %(memacc_code)s;
 
-        if (!alignmentOk(xc, EA, sizeof(Mem))) {
-            return std::make_shared<AddressFault>(EA, STORE_ADDR_MISALIGNED);
-        }
         {
             Fault fault =
                 writeMemAtomicLE(xc, traceData, Mem, EA, memAccessFlags,
@@ -203,9 +219,6 @@ def template StoreInitiateAcc {{
 
         %(memacc_code)s;
 
-        if (!alignmentOk(xc, EA, sizeof(Mem))) {
-            return std::make_shared<AddressFault>(EA, STORE_ADDR_MISALIGNED);
-        }
         {
             Fault fault = writeMemTimingLE(xc, traceData, Mem, EA,
                 memAccessFlags, nullptr);
@@ -228,7 +241,310 @@ def template StoreCompleteAcc {{
     }
 }};
 
-def format Load(memacc_code, ea_code = {{EA = Rs1 + offset;}},
+def template CacheBlockBasedStoreExecute {{
+    Fault
+    %(class_name)s::execute(ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        Addr EA;
+
+        %(op_decl)s;
+        %(op_rd)s;
+        %(ea_code)s;
+
+        Addr cacheBlockSize = xc->tcBase()->getCpuPtr()->cacheLineSize();
+        uint64_t numOffsetBits = floorLog2(cacheBlockSize);
+        EA = (EA >> numOffsetBits) << numOffsetBits;
+
+        {
+            Fault fault =
+                writeMemAtomic(xc, nullptr, EA, cacheBlockSize, memAccessFlags,
+                    nullptr, std::vector<bool>(cacheBlockSize, true));
+            if (fault != NoFault)
+                return fault;
+        }
+
+        return NoFault;
+    }
+}};
+
+def template CacheBlockBasedStoreInitiateAcc {{
+    Fault
+    %(class_name)s::initiateAcc(ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        Addr EA;
+
+        %(op_decl)s;
+        %(op_rd)s;
+        %(ea_code)s;
+
+        Addr cacheBlockSize = xc->tcBase()->getCpuPtr()->cacheLineSize();
+        uint64_t numOffsetBits = floorLog2(cacheBlockSize);
+        EA = (EA >> numOffsetBits) << numOffsetBits;
+
+        {
+            Fault fault =
+                writeMemTiming(xc, nullptr, EA, cacheBlockSize, memAccessFlags,
+                    nullptr, std::vector<bool>(cacheBlockSize, true));
+            if (fault != NoFault)
+                return fault;
+        }
+
+        return NoFault;
+    }
+}};
+
+def template CacheBlockBasedStoreCompleteAcc {{
+    Fault
+    %(class_name)s::completeAcc(PacketPtr pkt, ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        return NoFault;
+    }
+}};
+
+def template PrefetchDeclare {{
+    /**
+     * Static instruction class for "%(mnemonic)s".
+     */
+    class %(class_name)s : public %(base_class)s
+    {
+      private:
+        %(reg_idx_arr_decl)s;
+
+      public:
+        /// Constructor.
+        %(class_name)s(ExtMachInst machInst);
+
+        Fault execute(ExecContext *, trace::InstRecord *) const override;
+        Fault initiateAcc(ExecContext *, trace::InstRecord *) const override;
+        Fault completeAcc(PacketPtr, ExecContext *,
+                          trace::InstRecord *) const override;
+        std::string
+        generateDisassembly(Addr pc,
+                            const loader::SymbolTable *symtab) const override
+        {
+            std::stringstream ss;
+            ss << mnemonic << ' ' <<
+                offset << '(' << registerName(srcRegIdx(0)) << ')';
+            return ss.str();
+        }
+    };
+}};
+
+
+def template PrefetchCompleteAcc {{
+    Fault
+    %(class_name)s::completeAcc(PacketPtr pkt, ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        return NoFault;
+    }
+}};
+
+
+// H-extension formats execution template
+
+def template HyperLoadExecute {{
+    Fault
+    %(class_name)s::execute(
+        ExecContext *xc, trace::InstRecord *traceData) const
+    {
+        Addr EA;
+
+        %(op_decl)s;
+        %(op_rd)s;
+        %(ea_code)s;
+
+        auto pm = (PrivilegeMode)xc->readMiscReg(MISCREG_PRV);
+        HSTATUS hstatus = xc->readMiscReg(MISCREG_HSTATUS);
+        MISA misa = xc->readMiscReg(MISCREG_ISA);
+
+        if (!misa.rvh) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperLoad without RVH", machInst);
+        }
+
+        if (virtualizationEnabled(xc)) {
+            return std::make_shared<VirtualInstFault>(
+                "HyperLoad with V-bit on", machInst);
+        }
+
+        if (pm == PRV_U && hstatus.hu == 0) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperLoad in PRV_U with hstatus.hu == 0", machInst);
+        }
+
+        {
+            Fault fault =
+                readMemAtomicLE(xc, traceData, EA, Mem, memAccessFlags);
+            if (fault != NoFault)
+                return fault;
+        }
+
+        %(memacc_code)s;
+
+        %(op_wb)s;
+
+        return NoFault;
+    }
+}};
+
+def template HyperLoadInitiateAcc {{
+    Fault
+    %(class_name)s::initiateAcc(ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        Addr EA;
+
+        %(op_src_decl)s;
+        %(op_rd)s;
+        %(ea_code)s;
+
+        auto pm = (PrivilegeMode)xc->readMiscReg(MISCREG_PRV);
+        HSTATUS hstatus = xc->readMiscReg(MISCREG_HSTATUS);
+        MISA misa = xc->readMiscReg(MISCREG_ISA);
+
+        if (!misa.rvh) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperLoad without RVH", machInst);
+        }
+
+        if (virtualizationEnabled(xc)) {
+            return std::make_shared<VirtualInstFault>(
+                "HyperLoad with V-bit on", machInst);
+        }
+
+        if (pm == PRV_U && hstatus.hu == 0) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperLoad in PRV_U with hstatus.hu == 0", machInst);
+        }
+        return initiateMemRead(xc, traceData, EA, Mem, memAccessFlags);
+    }
+}};
+
+def template HyperLoadCompleteAcc {{
+    Fault
+    %(class_name)s::completeAcc(PacketPtr pkt, ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        %(op_decl)s;
+        %(op_rd)s;
+
+        getMemLE(pkt, Mem, traceData);
+
+        %(memacc_code)s;
+        %(op_wb)s;
+
+        return NoFault;
+    }
+}};
+
+def template HyperStoreExecute {{
+    Fault
+    %(class_name)s::execute(ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        Addr EA;
+
+        %(op_decl)s;
+        %(op_rd)s;
+        %(ea_code)s;
+
+        %(memacc_code)s;
+
+        auto pm = (PrivilegeMode)xc->readMiscReg(MISCREG_PRV);
+        HSTATUS hstatus = xc->readMiscReg(MISCREG_HSTATUS);
+        MISA misa = xc->readMiscReg(MISCREG_ISA);
+
+        if (!misa.rvh) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperStore without RVH", machInst);
+        }
+
+        if (virtualizationEnabled(xc)) {
+            return std::make_shared<VirtualInstFault>(
+                "HyperStore with V-bit on", machInst);
+        }
+
+        if (pm == PRV_U && hstatus.hu == 0) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperStore in PRV_U with hstatus.hu == 0", machInst);
+        }
+        {
+            Fault fault =
+                writeMemAtomicLE(xc, traceData, Mem, EA, memAccessFlags,
+                        nullptr);
+            if (fault != NoFault)
+                return fault;
+        }
+
+        %(postacc_code)s;
+        %(op_wb)s;
+
+        return NoFault;
+    }
+}};
+
+def template HyperStoreInitiateAcc {{
+    Fault
+    %(class_name)s::initiateAcc(ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        Addr EA;
+
+        %(op_decl)s;
+        %(op_rd)s;
+        %(ea_code)s;
+
+        %(memacc_code)s;
+
+        auto pm = (PrivilegeMode)xc->readMiscReg(MISCREG_PRV);
+        HSTATUS hstatus = xc->readMiscReg(MISCREG_HSTATUS);
+        MISA misa = xc->readMiscReg(MISCREG_ISA);
+
+        if (!misa.rvh) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperStore without RVH", machInst);
+        }
+
+        if (virtualizationEnabled(xc)) {
+            return std::make_shared<VirtualInstFault>(
+                "HyperStore with V-bit on", machInst);
+        }
+
+        if (pm == PRV_U && hstatus.hu == 0) {
+            return std::make_shared<IllegalInstFault>(
+                "HyperStore in PRV_U with hstatus.hu == 0", machInst);
+        }
+        {
+            Fault fault = writeMemTimingLE(xc, traceData, Mem, EA,
+                memAccessFlags, nullptr);
+            if (fault != NoFault)
+                return fault;
+        }
+
+        %(op_wb)s;
+
+        return NoFault;
+    }
+}};
+
+def template HyperStoreCompleteAcc {{
+    Fault
+    %(class_name)s::completeAcc(PacketPtr pkt, ExecContext *xc,
+        trace::InstRecord *traceData) const
+    {
+        return NoFault;
+    }
+}};
+
+
+
+// Format definitions
+
+def format Load(memacc_code, ea_code = {{EA = rvSext(Rs1 + offset);}},
         offset_code={{offset = sext<12>(IMM12);}},
         mem_flags=[], inst_flags=[]) {{
     (header_output, decoder_output, decode_block, exec_output) = \
@@ -236,10 +552,36 @@ def format Load(memacc_code, ea_code = {{EA = Rs1 + offset;}},
         inst_flags, 'Load', exec_template_base='Load')
 }};
 
-def format Store(memacc_code, ea_code={{EA = Rs1 + offset;}},
+def format Store(memacc_code, ea_code={{EA = rvSext(Rs1 + offset);}},
         offset_code={{offset = sext<12>(IMM5 | (IMM7 << 5));}},
         mem_flags=[], inst_flags=[]) {{
     (header_output, decoder_output, decode_block, exec_output) = \
         LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
         inst_flags, 'Store', exec_template_base='Store')
+}};
+
+def format CBMOp(memacc_code, ea_code={{EA = rvSext(Rs1);}},
+        offset_code={{;}}, mem_flags=[], inst_flags=[]) {{
+    (header_output, decoder_output, decode_block, exec_output) = \
+        LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
+        inst_flags, 'Store', exec_template_base='CacheBlockBasedStore')
+}};
+
+
+// H-extension formats
+
+def format HyperLoad(memacc_code, ea_code = {{EA = rvZext(Rs1 + offset);}},
+        offset_code={{offset = 0;}},
+        mem_flags=[], inst_flags=[]) {{
+    (header_output, decoder_output, decode_block, exec_output) = \
+        LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
+        inst_flags, 'Load', exec_template_base='HyperLoad')
+}};
+
+def format HyperStore(memacc_code, ea_code={{EA = rvZext(Rs1 + offset);}},
+        offset_code={{offset = 0;}},
+        mem_flags=[], inst_flags=[]) {{
+    (header_output, decoder_output, decode_block, exec_output) = \
+        LoadStoreBase(name, Name, offset_code, ea_code, memacc_code, mem_flags,
+        inst_flags, 'Store', exec_template_base='HyperStore')
 }};

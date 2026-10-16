@@ -11,6 +11,8 @@
 # neither the name of the copyright holders nor the names of its
 # contributors may be used to endorse or promote products derived from
 # this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 # "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 # LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
 # A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
@@ -24,14 +26,15 @@
 #
 # Authors: Sean Wilson
 
+
 class Result:
-    enums = '''
+    enums = """
         NotRun
         Skipped
         Passed
         Failed
         Errored
-    '''.split()
+    """.split()
     for idx, enum in enumerate(enums):
         locals()[enum] = idx
 
@@ -46,15 +49,16 @@ class Result:
     def __str__(self):
         return self.name(self.value)
 
+
 class Status:
-    enums = '''
+    enums = """
         Unscheduled
         Building
         Running
         TearingDown
         Complete
         Avoided
-    '''.split()
+    """.split()
     for idx, enum in enumerate(enums):
         locals()[enum] = idx
 

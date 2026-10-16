@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 ARM Limited
+ * Copyright (c) 2017, 2019, 2023 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -41,9 +41,12 @@
 #ifndef __BASE_BITFIELD_HH__
 #define __BASE_BITFIELD_HH__
 
+#include <bitset>
 #include <cassert>
+#include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace gem5
@@ -124,6 +127,22 @@ mask(unsigned first, unsigned last)
 template <int N>
 constexpr uint64_t
 sext(uint64_t val)
+{
+    bool sign_bit = bits(val, N - 1);
+    if (sign_bit)
+        val |= ~mask(N);
+    return val;
+}
+
+/**
+ * Sign-extend an N-bit value to 64 bits. Assumes all bits past the sign are
+ * currently zero. For true sign extension regardless of the value of the sign
+ * bit, see szext.
+ *
+ * @ingroup api_bitfield
+ */
+constexpr uint64_t
+sext(uint64_t val, int N)
 {
     bool sign_bit = bits(val, N - 1);
     if (sign_bit)
@@ -287,17 +306,31 @@ findMsbSet(uint64_t val)
     return msb;
 }
 
-/**
- * Returns the bit position of the LSB that is set in the input
- *
- * @ingroup api_bitfield
- */
+namespace {
+template<typename T>
+constexpr bool
+hasBuiltinCtz() {
+// Since the defined(__has_builtin) in the subsequent #if statement
+// won't short-circuit the macro expansion of
+// __has_builtin(__builtin_ctz), we must explicitly define it as zero
+// if it's undefined to avoid a preprocessor error.
+#ifndef __has_builtin
+#   define __has_builtin(foo) 0
+#endif
+#if defined(__has_builtin) && __has_builtin(__builtin_ctz)
+    return sizeof(unsigned long long) >= sizeof(T);
+#else
+    return false;
+#endif
+}
+
+[[maybe_unused]]
 constexpr int
-findLsbSet(uint64_t val)
-{
+findLsbSetFallback(uint64_t val) {
     int lsb = 0;
-    if (!val)
+    if (!val) {
         return sizeof(val) * 8;
+    }
     if (!bits(val, 31, 0)) {
         lsb += 32;
         val >>= 32;
@@ -318,9 +351,57 @@ findLsbSet(uint64_t val)
         lsb += 2;
         val >>= 2;
     }
-    if (!bits(val, 0, 0))
+    if (!bits(val, 0, 0)) {
         lsb += 1;
+    }
     return lsb;
+}
+} // anonymous namespace
+
+/**
+ * Returns the bit position of the LSB that is set in the input
+ * That function will either use a builtin that exploit a "count trailing
+ * zeros" instruction or use fall back method, `findLsbSetFallback`.
+ *
+ * @ingroup api_bitfield
+ */
+constexpr int
+findLsbSet(uint64_t val) {
+    if (val == 0) return 64;
+
+    if constexpr (hasBuiltinCtz<decltype(val)>()) {
+        return __builtin_ctzll(val);
+    } else {
+        return findLsbSetFallback(val);
+    }
+}
+
+
+template<size_t N>
+constexpr int
+findLsbSet(std::bitset<N> bs)
+{
+    if constexpr (N <= 64) {
+        return findLsbSet(bs.to_ullong());
+    } else {
+        if (bs.none()) return N;
+        // Mask of ones
+        constexpr std::bitset<N> mask(std::numeric_limits<uint64_t>::max());
+        // Is the lsb set in the rightmost 64 bits ?
+        auto nextQword{bs & mask};
+        int i{0};
+        while (nextQword.none()) {
+            // If no, shift by 64 bits and repeat
+            i += 64;
+            bs >>= 64;
+            nextQword = bs & mask;
+        }
+        // If yes, account for the bumber of 64-bit shifts and add the
+        // remaining using the uint64_t implementation. Store in intermediate
+        // variable to ensure valid conversion from ullong to uint64_t.
+        uint64_t remaining{nextQword.to_ullong()};
+        return i + findLsbSet(remaining);
+    }
 }
 
 /**
@@ -434,6 +515,92 @@ constexpr inline int
 clz64(uint64_t value)
 {
     return value ? __builtin_clzll(value) : 64;
+}
+
+template<typename T, int pos, char curr_bit>
+constexpr auto
+dontCareMask()
+{
+    if constexpr (curr_bit != 'X' && curr_bit != 'x') {
+        return static_cast<T>(1) << pos;
+    } else {
+        return 0;
+    }
+}
+
+template<typename T, int msb, int lsb, char curr, char... rest>
+constexpr auto
+dontCareMask()
+{
+    if constexpr (msb < lsb) {
+        return 0;
+    } else if constexpr (msb == lsb) {
+        return dontCareMask<T, msb, curr>();
+    } else {
+        return dontCareMask<T, msb, curr>() |
+               dontCareMask<T, msb-1, lsb, rest...>();
+    }
+}
+
+template<typename T, int pos, char curr_bit>
+constexpr auto
+bitMatch()
+{
+    if constexpr (curr_bit == '1') {
+        return 1ULL << pos;
+    } else {
+        return 0;
+    }
+}
+
+template<typename T, int msb, int lsb, char curr, char... rest>
+constexpr auto
+bitMatch()
+{
+    if constexpr (msb < lsb) {
+        return 0;
+    } else if constexpr (msb == lsb) {
+        return bitMatch<T, msb, curr>();
+    } else {
+        return bitMatch<T, msb, curr>() |
+               bitMatch<T, msb-1, lsb, rest...>();
+    }
+}
+
+/**
+ * This helper implements a pattern matcher that can be used
+ * for instruction decoding. A pattern is provided as a template
+ * parameter (a series of 1,0 and X=don't care). It will produce
+ * a lambda that can be used to match a sequence of bits over
+ * the provided pattern.
+ *
+ * Example: match bit 31, 30, and 29 with '0X0'
+ *
+ * constexpr auto decoder = bitPatternMatcher<31, 29, '0', 'X', '0'>;
+ *
+ * uint32_t msbs_are_010 = 0x40000000;
+ * uint32_t msbs_are_000 = 0x10000000;
+ * uint32_t msbs_are_100 = 0x80000000;
+ *
+ * decoder(msbs_are_010) -> returns true
+ * decoder(msbs_are_000) -> returns true
+ * decoder(msbs_are_100) -> returns false
+ */
+template<typename T, int msb, int lsb, char curr, char... rest>
+constexpr auto
+bitPatternMatcher()
+{
+    // No need to check if msb > lsb as it's already covered by
+    // the last conditin in the assertion (impossible to get a negative
+    // sizeof)
+    static_assert(msb >= 0 && lsb >= 0 && msb - lsb == sizeof...(rest));
+    constexpr T mask = dontCareMask<T, msb, lsb, curr, rest...>();
+    constexpr T match = bitMatch<T, msb, lsb, curr, rest...>();
+    auto ret = [] (T value) constexpr
+    {
+        return (value & mask) == match;
+    };
+    return ret;
 }
 
 } // namespace gem5

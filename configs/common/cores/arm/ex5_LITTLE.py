@@ -1,3 +1,15 @@
+# Copyright (c) 2025 Arm Limited
+# All rights reserved.
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
 # Copyright (c) 2012 The Regents of The University of Michigan
 # Copyright (c) 2016 Centre National de la Recherche Scientifique
 # All rights reserved.
@@ -31,6 +43,7 @@ from m5.objects import *
 #                ex5 LITTLE core (based on the ARM Cortex-A7)
 # -----------------------------------------------------------------------
 
+
 # Simple ALU Instructions have a latency of 3
 class ex5_LITTLE_Simple_Int(MinorDefaultIntFU):
     opList = [OpDesc(opClass="IntAlu", opLat=4)]
@@ -56,6 +69,7 @@ class ex5_LITTLE_FP(MinorDefaultFloatSimdFU):
         OpDesc(opClass="SimdMisc", opLat=3),
         OpDesc(opClass="SimdMult", opLat=4),
         OpDesc(opClass="SimdMultAcc", opLat=5),
+        OpDesc(opClass="SimdMatMultAcc", opLat=5),
         OpDesc(opClass="SimdShift", opLat=3),
         OpDesc(opClass="SimdShiftAcc", opLat=3),
         OpDesc(opClass="SimdSqrt", opLat=9),
@@ -67,6 +81,7 @@ class ex5_LITTLE_FP(MinorDefaultFloatSimdFU):
         OpDesc(opClass="SimdFloatMisc", opLat=6),
         OpDesc(opClass="SimdFloatMult", opLat=15),
         OpDesc(opClass="SimdFloatMultAcc", opLat=6),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=6),
         OpDesc(opClass="SimdFloatSqrt", opLat=17),
         OpDesc(opClass="FloatAdd", opLat=8),
         OpDesc(opClass="FloatCmp", opLat=6),
@@ -88,8 +103,8 @@ class ex5_LITTLE_MemFU(MinorDefaultMemFU):
 # Misc Unit
 class ex5_LITTLE_MiscFU(MinorDefaultMiscFU):
     opList = [
-        OpDesc(opClass="IprAccess", opLat=1),
         OpDesc(opClass="InstPrefetch", opLat=1),
+        OpDesc(opClass="System", opLat=1),
     ]
 
 
@@ -121,7 +136,7 @@ class L1Cache(Cache):
 
 class L1I(L1Cache):
     mshrs = 2
-    size = "32kB"
+    size = "32KiB"
     assoc = 2
     is_read_only = True
     tgts_per_mshr = 20
@@ -129,7 +144,7 @@ class L1I(L1Cache):
 
 class L1D(L1Cache):
     mshrs = 4
-    size = "32kB"
+    size = "32KiB"
     assoc = 4
     write_buffers = 4
 
@@ -141,12 +156,11 @@ class L2(Cache):
     response_latency = 9
     mshrs = 8
     tgts_per_mshr = 12
-    size = "512kB"
+    size = "512KiB"
     assoc = 8
     write_buffers = 16
-    prefetch_on_access = True
     clusivity = "mostly_excl"
     # Simple stride prefetcher
-    prefetcher = StridePrefetcher(degree=1, latency=1)
+    prefetcher = StridePrefetcher(degree=1, latency=1, prefetch_on_access=True)
     tags = BaseSetAssoc()
     replacement_policy = RandomRP()

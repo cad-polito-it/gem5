@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015 Jason Power
 # All rights reserved.
 #
@@ -25,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" This file creates a system with Ruby caches and runs the ruby random tester
+"""This file creates a system with Ruby caches and runs the ruby random tester
 See Part 3 in the Learning gem5 book:
 http://gem5.org/documentation/learning_gem5/part3/MSIintro
 
@@ -34,13 +33,13 @@ IMPORTANT: If you modify this file, it's likely that the Learning gem5 book
 
 """
 
+from test_caches import TestCacheSystem
+
 # import the m5 (gem5) library created when gem5 is built
 import m5
 
 # import all of the SimObjects
 from m5.objects import *
-
-from test_caches import TestCacheSystem
 
 # create the system we are going to simulate
 system = System()
@@ -52,7 +51,7 @@ system.clk_domain.voltage_domain = VoltageDomain()
 
 # Set up the system
 system.mem_mode = "timing"  # Use timing accesses
-system.mem_ranges = [AddrRange("512MB")]  # Create an address range
+system.mem_ranges = [AddrRange("512MiB")]  # Create an address range
 
 # Create the tester
 system.tester = RubyTester(
@@ -60,7 +59,7 @@ system.tester = RubyTester(
 )
 
 # Create a simple memory controller and connect it to the membus
-system.mem_ctrl = SimpleMemory(latency="50ns", bandwidth="0GB/s")
+system.mem_ctrl = SimpleMemory(latency="50ns", bandwidth="0GiB/s")
 system.mem_ctrl.range = system.mem_ranges[0]
 
 # Create the Ruby System
@@ -78,6 +77,4 @@ m5.instantiate()
 
 print("Beginning simulation!")
 exit_event = m5.simulate()
-print(
-    "Exiting @ tick {} because {}".format(m5.curTick(), exit_event.getCause())
-)
+print(f"Exiting @ tick {m5.curTick()} because {exit_event.getCause()}")

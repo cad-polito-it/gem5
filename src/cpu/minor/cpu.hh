@@ -56,7 +56,6 @@
 namespace gem5
 {
 
-  GEM5_DEPRECATED_NAMESPACE(Minor, minor);
   namespace minor
   {
 
@@ -91,6 +90,8 @@ namespace gem5
      *  Elements of pipeline call TheISA to implement the model. */
     minor::Pipeline *pipeline;
 
+    Random::RandomPtr rng = Random::genRandom();
+
   public:
     /** Activity recording for pipeline.  This belongs to Pipeline but
      *  stages will access it through the CPU as the MinorCPU object
@@ -113,7 +114,7 @@ namespace gem5
 
     public:
       MinorCPUPort(const std::string &name_, MinorCPU &cpu_)
-          : RequestPort(name_, &cpu_), cpu(cpu_)
+          : RequestPort(name_), cpu(cpu_)
       {
       }
     };
@@ -198,7 +199,7 @@ namespace gem5
       }
 
       std::shuffle(prio_list.begin(), prio_list.end(),
-                   random_mt.gen);
+                   rng->gen);
 
       return prio_list;
     }

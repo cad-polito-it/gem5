@@ -27,18 +27,17 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
+from example.gpufs.DisjointNetwork import *
+from ruby import Ruby
+from ruby.GPU_VIPER import *
+
 from m5.defines import buildEnv
 from m5.objects import *
 from m5.util import fatal
 
-from example.gpufs.DisjointNetwork import *
-from ruby.GPU_VIPER import *
-from ruby import Ruby
-
 
 class DummySystem:
     def __init__(self, mem_ranges):
-
         self.mem_ctrls = []
         self.mem_ranges = mem_ranges
 
@@ -48,10 +47,9 @@ class Disjoint_VIPER(RubySystem):
         if buildEnv["PROTOCOL"] != "GPU_VIPER":
             fatal("This ruby config only supports the GPU_VIPER protocol")
 
-        super(Disjoint_VIPER, self).__init__()
+        super().__init__()
 
     def create(self, options, system, piobus, dma_devices):
-
         # Disjoint network topology
         if "garnet" in options.network:
             self.network_cpu = DisjointGarnet(self)
@@ -59,6 +57,8 @@ class Disjoint_VIPER(RubySystem):
         else:
             self.network_cpu = DisjointSimple(self)
             self.network_gpu = DisjointSimple(self)
+
+        self.block_size_bytes = options.cacheline_size
 
         # Construct CPU controllers
         cpu_dir_nodes = construct_dirs(options, system, self, self.network_cpu)
@@ -107,8 +107,17 @@ class Disjoint_VIPER(RubySystem):
         system.memories = cpu_abstract_mems
 
         gpu_abstract_mems = []
+
         for mem_ctrl in gpu_mem_ctrls:
-            gpu_abstract_mems.append(mem_ctrl.dram)
+            # memctrl
+            if hasattr(mem_ctrl, "dram"):
+                gpu_abstract_mems.append(mem_ctrl.dram)
+            else:
+                gpu_abstract_mems.append(mem_ctrl)
+            # hbmctrl
+            if hasattr(mem_ctrl, "dram_2"):
+                gpu_abstract_mems.append(mem_ctrl.dram_2)
+
         system.pc.south_bridge.gpu.memories = gpu_abstract_mems
 
         # Setup DMA controllers
@@ -119,7 +128,7 @@ class Disjoint_VIPER(RubySystem):
         dma_cntrls = []
         for i, dma_device in enumerate(dma_devices):
             dma_seq = DMASequencer(version=i, ruby_system=self)
-            dma_cntrl = DMA_Controller(
+            dma_cntrl = GPU_VIPER_DMA_Controller(
                 version=i, dma_sequencer=dma_seq, ruby_system=self
             )
 

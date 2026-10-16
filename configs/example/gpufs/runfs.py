@@ -1,4 +1,4 @@
-# Copyright (c) 2021 Advanced Micro Devices, Inc.
+# Copyright (c) 2021-2024 Advanced Micro Devices, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -29,6 +29,7 @@
 
 # System includes
 import argparse
+import hashlib
 import math
 
 # gem5 related
@@ -38,13 +39,15 @@ from m5.util import addToPath
 
 # gem5 options and objects
 addToPath("../../")
-from ruby import Ruby
-from common import Simulation
-from common import ObjectList
-from common import Options
-from common import GPUTLBOptions
-from common import GPUTLBConfig
 from amd import AmdGPUOptions
+from common import (
+    GPUTLBConfig,
+    GPUTLBOptions,
+    ObjectList,
+    Options,
+    Simulation,
+)
+from ruby import Ruby
 
 # GPU FS related
 from system.system import makeGpuFSSystem
@@ -79,9 +82,11 @@ def addRunFSOptions(parser):
         help="The second disk image to mount (/dev/sdb)",
     )
     parser.add_argument("--kernel", default=None, help="Linux kernel to boot")
-    parser.add_argument("--gpu-rom", default=None, help="GPU BIOS to load")
     parser.add_argument(
-        "--gpu-mmio-trace", default=None, help="GPU MMIO trace to load"
+        "--gpu-ipt",
+        type=str,
+        default="",
+        help="Intended only for gem5 developers. IP discovery table to load",
     )
     parser.add_argument(
         "--checkpoint-before-mmios",
@@ -109,20 +114,119 @@ def addRunFSOptions(parser):
         "--dgpu-mem-size",
         action="store",
         type=str,
-        default="16GB",
-        help="Specify the dGPU physical memory" "  size",
+        default="16GiB",
+        help="Specify the dGPU physical memory size",
     )
     parser.add_argument(
         "--dgpu-num-dirs",
         type=int,
         default=1,
-        help="Set " "the number of dGPU directories (memory controllers",
+        help="Set the number of dGPU directories (memory controllers",
     )
     parser.add_argument(
         "--dgpu-mem-type",
         default="HBM_1000_4H_1x128",
         choices=ObjectList.mem_list.get_names(),
         help="type of memory to use",
+    )
+
+    # These are the models that are both supported in gem5 and supported
+    # by the versions of ROCm supported by gem5 in full system mode. For
+    # other gfx versions there is some support in syscall emulation mode.
+    parser.add_argument(
+        "--gpu-device",
+        default="MI300X",
+        choices=["Vega10", "MI100", "MI200", "MI300X", "MI355X"],
+        help="GPU model to run: Vega10 (gfx900), MI100 (gfx908), MI200 "
+        "(gfx90a), MI300X (gfx942), or MI355X (gfx950).",
+    )
+
+    parser.add_argument(
+        "--debug-at-gpu-task",
+        type=int,
+        default=-1,
+        help="Turn on debug flags starting with this task (counting both blit"
+        " and non-blit kernels)",
+    )
+
+    parser.add_argument(
+        "--exit-at-gpu-task",
+        type=int,
+        default=-1,
+        help="Exit simulation after running this many tasks (counting both "
+        "blit and non-blit kernels)",
+    )
+
+    parser.add_argument(
+        "--exit-after-gpu-kernel",
+        type=int,
+        default=-1,
+        help="Exit simulation after completing this (non-blit) kernel",
+    )
+
+    parser.add_argument(
+        "--skip-until-gpu-kernel",
+        type=int,
+        default=0,
+        help="Skip (non-blit) kernels until reaching this kernel. Note that "
+        "this can impact correctness (the skipped kernels are completely "
+        "skipped, not fast forwarded)",
+    )
+
+    parser.add_argument(
+        "--root-partition",
+        type=str,
+        default="/dev/sda1",
+        help="Root partition of disk image",
+    )
+
+    parser.add_argument(
+        "--disable-avx",
+        action="store_true",
+        default=False,
+        help="Disables AVX. AVX is used in some ROCm libraries but "
+        "does not have checkpointing support yet. If simulation either "
+        "creates a checkpoint or restores from one, then AVX needs to "
+        "be disabled for correct functionality ",
+    )
+
+    parser.add_argument(
+        "--kvm-perf",
+        default=False,
+        action="store_true",
+        help="Enable KVM perf counters",
+    )
+
+    parser.add_argument(
+        "--tcp-rp",
+        type=str,
+        default="TreePLRURP",
+        choices=ObjectList.rp_list.get_names(),
+        help="cache replacement policy" "policy for tcp",
+    )
+
+    parser.add_argument(
+        "--tcc-rp",
+        type=str,
+        default="TreePLRURP",
+        choices=ObjectList.rp_list.get_names(),
+        help="cache replacement policy" "policy for tcc",
+    )
+
+    # sqc rp both changes sqc rp and scalar cache rp
+    parser.add_argument(
+        "--sqc-rp",
+        type=str,
+        default="TreePLRURP",
+        choices=ObjectList.rp_list.get_names(),
+        help="cache replacement policy" "policy for sqc",
+    )
+
+    parser.add_argument(
+        "--gpu-progress-interval",
+        type=int,
+        default=0,
+        help="Frequency in exec cycles of GPU progress prints",
     )
 
 
@@ -136,7 +240,8 @@ def runGpuFSSystem(args):
     # GPUFS is primarily designed to use the X86 KVM CPU. This model needs to
     # use multiple event queues when more than one CPU is simulated. Force it
     # on if that is the case.
-    args.host_parallel = True if args.num_cpus > 1 else False
+    if ObjectList.is_kvm_cpu(ObjectList.cpu_list.get(args.cpu_type)):
+        args.host_parallel = True if args.num_cpus > 1 else False
 
     # These are used by the protocols. They should not be set by the user.
     n_cu = args.num_compute_units
@@ -167,6 +272,10 @@ def runGpuFSSystem(args):
 
     print("Running the simulation")
     sim_ticks = args.abs_max_tick
+    kernels_completed = 0
+    tasks_completed = 0
+    if args.debug_at_gpu_task != -1:
+        m5.trace.disable()
 
     exit_event = m5.simulate(sim_ticks)
 
@@ -182,10 +291,31 @@ def runGpuFSSystem(args):
             assert args.checkpoint_dir is not None
             m5.checkpoint(args.checkpoint_dir)
             break
+        elif "GPU Kernel Completed" in exit_event.getCause():
+            if kernels_completed == args.exit_after_gpu_kernel:
+                print(f"Exiting after GPU kernel {kernels_completed}")
+                break
+            kernels_completed += 1
+            tasks_completed += 1
+        elif "GPU Blit Kernel Completed" in exit_event.getCause():
+            tasks_completed += 1
+        elif "Skipping GPU Kernel" in exit_event.getCause():
+            print(f"Skipping GPU kernel {kernels_completed}")
+            kernels_completed += 1
+            tasks_completed += 1
         else:
             print(
-                "Unknown exit event: %s. Continuing..." % exit_event.getCause()
+                f"Unknown exit event: {exit_event.getCause()}. Continuing..."
             )
+
+        if tasks_completed == args.debug_at_gpu_task:
+            print(f"Enabling debug flags @ GPU task {tasks_completed}")
+            m5.trace.enable()
+        if tasks_completed == args.exit_at_gpu_task:
+            print(f"Exiting @ GPU task {tasks_completed}")
+            break
+
+        exit_event = m5.simulate(sim_ticks - m5.curTick())
 
     print(
         "Exiting @ tick %i because %s" % (m5.curTick(), exit_event.getCause())

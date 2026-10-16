@@ -1,4 +1,5 @@
 # Copyright (c) 2021 Huawei International
+# Copyright (c) 2023 Google LLC
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -39,23 +40,51 @@ from m5.proxy import *
 from m5.util.fdthelper import *
 
 
-class Plic(BasicPioDevice):
+class PlicBase(BasicPioDevice):
+    """
+    This is abstract class of PLIC and
+    define interface to handle received
+    interrupt singal from device
+    """
+
+    type = "PlicBase"
+    cxx_header = "dev/riscv/plic.hh"
+    cxx_class = "gem5::PlicBase"
+    abstract = True
+
+    pio_size = Param.Addr("PIO Size")
+
+
+class Plic(PlicBase):
     """
     This implementation of PLIC is based on
-    the SiFive U54MC datasheet:
-    https://sifive.cdn.prismic.io/sifive/fab000f6-
-    0e07-48d0-9602-e437d5367806_sifive_U54MC_rtl_
-    full_20G1.03.00_manual.pdf
+    the riscv-plic-spec repository:
+    https://github.com/riscv/riscv-plic-spec/releases/tag/1.0.0
     """
 
     type = "Plic"
     cxx_header = "dev/riscv/plic.hh"
     cxx_class = "gem5::Plic"
-    pio_size = Param.Addr(0x4000000, "PIO Size")
+    pio_size = 0x4000000
     n_src = Param.Int("Number of interrupt sources")
+    # Ref: https://github.com/qemu/qemu/blob/760b4dc/hw/intc/sifive_plic.c#L285
+    hart_config = Param.String(
+        "",
+        "String represent for PLIC hart/pmode config like QEMU plic"
+        "Ex."
+        "'M'              1 hart with M mode"
+        "'MS,MS'          2 harts, 0-1 with M and S mode"
+        "'M,MS,MS,MS,MS'  5 harts, 0 with M mode, 1-5 with M and S mode",
+    )
     n_contexts = Param.Int(
+        0,
+        "Deprecated, use `hart_config` instead. "
         "Number of interrupt contexts. Usually the number "
-        "of threads * 2. One for M mode, one for S mode"
+        "of threads * 2. One for M mode, one for S mode",
+    )
+    output_latency = Param.Int(
+        3,
+        "Cycle latency from received interrupt signal to output",
     )
 
     def generateDeviceTree(self, state):
@@ -73,12 +102,26 @@ class Plic(BasicPioDevice):
 
         cpus = self.system.unproxy(self).cpu
         int_extended = list()
-        for cpu in cpus:
-            phandle = int_state.phandle(cpu)
-            int_extended.append(phandle)
-            int_extended.append(0xB)
-            int_extended.append(phandle)
-            int_extended.append(0x9)
+        if self.n_contexts != 0:
+            for cpu in cpus:
+                phandle = int_state.phandle(cpu)
+                int_extended.append(phandle)
+                int_extended.append(0xB)
+                int_extended.append(phandle)
+                int_extended.append(0x9)
+        elif self.hart_config != "":
+            cpu_id = 0
+            phandle = int_state.phandle(cpus[cpu_id])
+            for c in self.hart_config:
+                if c == ",":
+                    cpu_id += 1
+                    phandle = int_state.phandle(cpus[cpu_id])
+                elif c == "S":
+                    int_extended.append(phandle)
+                    int_extended.append(0x9)
+                elif c == "M":
+                    int_extended.append(phandle)
+                    int_extended.append(0xB)
 
         node.append(FdtPropertyWords("interrupts-extended", int_extended))
         node.append(FdtProperty("interrupt-controller"))

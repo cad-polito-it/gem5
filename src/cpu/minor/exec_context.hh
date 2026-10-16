@@ -48,18 +48,17 @@
 #ifndef __CPU_MINOR_EXEC_CONTEXT_HH__
 #define __CPU_MINOR_EXEC_CONTEXT_HH__
 
+#include "cpu/base.hh"
 #include "cpu/exec_context.hh"
 #include "cpu/minor/execute.hh"
 #include "cpu/minor/pipeline.hh"
-#include "cpu/base.hh"
 #include "cpu/simple_thread.hh"
-#include "mem/request.hh"
 #include "debug/MinorExecute.hh"
+#include "mem/request.hh"
 
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Minor, minor);
 namespace minor
 {
 
@@ -143,12 +142,67 @@ class ExecContext : public gem5::ExecContext
             std::vector<bool>(size, true));
     }
 
+    /** Count a register read in the execute stats */
+    void
+    countRegRead(const RegId &reg)
+    {
+        auto &stats = *cpu.executeStats[thread.threadId()];
+        switch (reg.classValue()) {
+            case IntRegClass:
+                stats.numIntRegReads++;
+                break;
+            case FloatRegClass:
+                stats.numFpRegReads++;
+                break;
+            case CCRegClass:
+                stats.numCCRegReads++;
+                break;
+            case VecRegClass:
+            case VecElemClass:
+                stats.numVecRegReads++;
+                break;
+            case VecPredRegClass:
+                stats.numVecPredRegReads++;
+                break;
+            default:
+                break;
+        }
+    }
+
+    /** Count a register write in the execute stats */
+    void
+    countRegWrite(const RegId &reg)
+    {
+        auto &stats = *cpu.executeStats[thread.threadId()];
+        switch (reg.classValue()) {
+            case IntRegClass:
+                stats.numIntRegWrites++;
+                break;
+            case FloatRegClass:
+                stats.numFpRegWrites++;
+                break;
+            case CCRegClass:
+                stats.numCCRegWrites++;
+                break;
+            case VecRegClass:
+            case VecElemClass:
+                stats.numVecRegWrites++;
+                break;
+            case VecPredRegClass:
+                stats.numVecPredRegWrites++;
+                break;
+            default:
+                break;
+        }
+    }
+
     RegVal
     getRegOperand(const StaticInst *si, int idx) override
     {
         const RegId &reg = si->srcRegIdx(idx);
         if (reg.is(InvalidRegClass))
             return 0;
+        countRegRead(reg);
         return thread.getFwdReg(reg);
     }
 
@@ -164,6 +218,7 @@ class ExecContext : public gem5::ExecContext
     void
     getRegOperand(const StaticInst *si, int idx, void *val) override
     {
+        countRegRead(si->srcRegIdx(idx));
         thread.getFwdReg(si->srcRegIdx(idx), val);
     }
 
@@ -176,7 +231,13 @@ class ExecContext : public gem5::ExecContext
     void *
     getWritableRegOperand(const StaticInst *si, int idx) override
     {
-        return thread.getFwdWritableReg(si->destRegIdx(idx));
+        const RegId &reg = si->destRegIdx(idx);
+        auto &stats = *cpu.executeStats[thread.threadId()];
+        if (reg.is(VecRegClass))
+            stats.numVecRegWrites++;
+        else if (reg.is(VecPredRegClass))
+            stats.numVecPredRegWrites++;
+        return thread.getFwdWritableReg(reg);
     }
 
     void *
@@ -191,6 +252,7 @@ class ExecContext : public gem5::ExecContext
         const RegId &reg = si->destRegIdx(idx);
         if (reg.is(InvalidRegClass))
             return;
+        countRegWrite(reg);
         thread.setFwdReg(si->destRegIdx(idx), val);
     }
 
@@ -206,6 +268,7 @@ class ExecContext : public gem5::ExecContext
     void
     setRegOperand(const StaticInst *si, int idx, const void *val) override
     {
+        countRegWrite(si->destRegIdx(idx));
         thread.setFwdReg(si->destRegIdx(idx), val);
     }
 

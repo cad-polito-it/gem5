@@ -36,9 +36,12 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.params import *
 from m5.objects.AbstractMemory import AbstractMemory
-from m5.util.fdthelper import FdtNode, FdtPropertyWords
+from m5.params import *
+from m5.util.fdthelper import (
+    FdtNode,
+    FdtPropertyWords,
+)
 
 
 class CfiMemory(AbstractMemory):
@@ -50,10 +53,10 @@ class CfiMemory(AbstractMemory):
 
     latency = Param.Latency("30ns", "Request to response latency")
     latency_var = Param.Latency("0ns", "Request to response latency variance")
-    # The memory bandwidth limit default is set to 12.8GB/s which is
+    # The memory bandwidth limit default is set to 12.8GiB/s which is
     # representative of a x64 DDR3-1600 channel.
     bandwidth = Param.MemoryBandwidth(
-        "12.8GB/s", "Combined read and write bandwidth"
+        "12.8GiB/s", "Combined read and write bandwidth"
     )
 
     vendor_id = Param.UInt16(0, "vendor ID")

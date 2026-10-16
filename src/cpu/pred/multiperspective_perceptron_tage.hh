@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2022-2023 The University of Edinburgh
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright 2019 Texas A&M University
  *
  * Redistribution and use in source and binary forms, with or without
@@ -39,6 +51,7 @@
 #ifndef __CPU_PRED_MULTIPERSPECTIVE_PERCEPTRON_TAGE_HH__
 #define __CPU_PRED_MULTIPERSPECTIVE_PERCEPTRON_TAGE_HH__
 
+#include "base/random.hh"
 #include "cpu/pred/loop_predictor.hh"
 #include "cpu/pred/multiperspective_perceptron.hh"
 #include "cpu/pred/statistical_corrector.hh"
@@ -57,10 +70,14 @@ namespace branch_prediction
 class MPP_TAGE : public TAGEBase
 {
     std::vector<unsigned int> tunedHistoryLengths;
+
+    Random::RandomPtr rng = Random::genRandom();
+
   public:
     struct BranchInfo : public TAGEBase::BranchInfo
     {
-        BranchInfo(TAGEBase &tage) : TAGEBase::BranchInfo(tage)
+        BranchInfo(TAGEBase &tage, Addr pc, bool cond)
+        : TAGEBase::BranchInfo(tage, pc, cond)
         {}
         virtual ~BranchInfo()
         {}
@@ -82,12 +99,9 @@ class MPP_TAGE : public TAGEBase
 
     unsigned getUseAltIdx(TAGEBase::BranchInfo* bi, Addr branch_pc) override;
     void adjustAlloc(bool & alloc, bool taken, bool pred_taken) override;
-    void updateHistories(ThreadID tid, Addr branch_pc, bool taken,
-                         TAGEBase::BranchInfo* b, bool speculative,
-                         const StaticInstPtr &inst, Addr target) override;
-
-    void updatePathAndGlobalHistory(ThreadHistory& tHist, int brtype,
-                                    bool taken, Addr branch_pc, Addr target);
+    void updateHistories(ThreadID tid, Addr branch_pc, bool speculative,
+                         bool taken, Addr target, const StaticInstPtr & inst,
+                         TAGEBase::BranchInfo* bi) override;
 };
 
 class MPP_LoopPredictor : public LoopPredictor
@@ -120,8 +134,10 @@ class MPP_StatisticalCorrector : public StatisticalCorrector
 
     struct MPP_SCThreadHistory : public StatisticalCorrector::SCThreadHistory
     {
-        MPP_SCThreadHistory() : globalHist(0), historyStack(16, 0),
-            historyStackPointer(0) {}
+        MPP_SCThreadHistory(unsigned instShiftAmt)
+            : SCThreadHistory(instShiftAmt),
+              globalHist(0), historyStack(16, 0),
+              historyStackPointer(0) {}
         int64_t globalHist; // global history
         std::vector<int64_t> historyStack;
         unsigned int historyStackPointer;
@@ -173,13 +189,13 @@ class MPP_StatisticalCorrector : public StatisticalCorrector
     bool scPredict(ThreadID tid, Addr branch_pc, bool cond_branch,
                    StatisticalCorrector::BranchInfo* bi, bool prev_pred_taken,
                    bool bias_bit, bool use_conf_ctr, int8_t conf_ctr,
-                   unsigned conf_bits, int hitBank, int altBank, int64_t phist,
+                   unsigned conf_bits, int hitBank, int altBank,
                    int init_lsum) override;
 
     void condBranchUpdate(ThreadID tid, Addr branch_pc, bool taken,
                           StatisticalCorrector::BranchInfo *bi,
-                          Addr corrTarget, bool b, int hitBank, int altBank,
-                          int64_t phist) override;
+                          Addr target, bool b, int hitBank,
+                          int altBank) override;
 
     virtual void getBiasLSUM(Addr branch_pc,
             StatisticalCorrector::BranchInfo *bi, int &lsum) const = 0;
@@ -209,7 +225,7 @@ class MultiperspectivePerceptronTAGE : public MultiperspectivePerceptron
                           LoopPredictor &loopPredictor,
                           StatisticalCorrector &statisticalCorrector)
           : MPPBranchInfo(pc, pcshift, cond),
-            tageBranchInfo(tage.makeBranchInfo()),
+            tageBranchInfo(tage.makeBranchInfo(pc, cond)),
             lpBranchInfo(loopPredictor.makeBranchInfo()),
             scBranchInfo(statisticalCorrector.makeBranchInfo()),
             predictedTaken(false)
@@ -236,12 +252,16 @@ class MultiperspectivePerceptronTAGE : public MultiperspectivePerceptron
 
     bool lookup(ThreadID tid, Addr instPC, void * &bp_history) override;
 
-    void update(ThreadID tid, Addr instPC, bool taken,
-            void *bp_history, bool squashed,
-            const StaticInstPtr & inst,
-            Addr corrTarget) override;
-    void uncondBranch(ThreadID tid, Addr pc, void * &bp_history) override;
-    void squash(ThreadID tid, void *bp_history) override;
+    void update(ThreadID tid, Addr pc, bool taken,
+                void * &bp_history, bool squashed,
+                const StaticInstPtr & inst, Addr target) override;
+    void updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
+                         Addr target, const StaticInstPtr &inst,
+                         void * &bp_history) override;
+    void squash(ThreadID tid, void * &bp_history) override;
+    void branchPlaceholder(ThreadID tid, Addr pc,
+                                bool uncond, void * &bp_history) override
+    { panic("Not implemented for this BP!\n"); }
 
 };
 

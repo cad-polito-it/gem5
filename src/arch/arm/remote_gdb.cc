@@ -1,7 +1,7 @@
 /*
  * Copyright 2015 LabWare
  * Copyright 2014 Google Inc.
- * Copyright (c) 2010, 2013, 2016, 2018-2019 ARM Limited
+ * Copyright (c) 2010, 2013, 2016, 2018-2019, 2025 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -201,8 +201,9 @@ tryTranslate(ThreadContext *tc, Addr addr)
            mmu->translateFunctional(req, tc, BaseMMU::Execute) == NoFault;
 }
 
-RemoteGDB::RemoteGDB(System *_system, int _port)
-    : BaseRemoteGDB(_system, _port), regCache32(this), regCache64(this)
+RemoteGDB::RemoteGDB(System *_system, ListenSocketConfig _listen_config)
+    : BaseRemoteGDB(_system, _listen_config),
+    regCache32(this), regCache64(this)
 {
 }
 
@@ -311,7 +312,7 @@ RemoteGDB::AArch32GdbRegCache::getRegs(ThreadContext *context)
     for (int i = 0; i < 32; i++)
         r.fpr[i] = 0;
 
-    r.fpscr = context->readMiscRegNoEffect(MISCREG_FPSCR);
+    r.fpscr = context->readMiscReg(MISCREG_FPSCR);
 }
 
 void

@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2023 Arm Limited
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2019 The Regents of the University of California
  * All rights reserved
  *
@@ -316,11 +328,29 @@ TEST(BitfieldTest, FindLsb)
 {
     uint64_t val = (1ULL << 63) + (1 << 1);
     EXPECT_EQ(1, findLsbSet(val));
+    EXPECT_EQ(1, findLsbSetFallback(val));
 }
 
 TEST(BitfieldTest, FindLsbZero)
 {
     EXPECT_EQ(64, findLsbSet(0));
+}
+
+TEST(BitfieldTest, FindLsbGeneralized)
+{
+    static constexpr size_t N{1000};
+    std::bitset<N> bs{0};
+    EXPECT_EQ(findLsbSet(bs), N);
+    for (size_t i{0}; i < N ; ++i) {
+        bs = std::bitset<N>{1} << i;
+        ASSERT_EQ(findLsbSet(bs), i);
+    }
+
+    const auto leadingOne = std::bitset<N>{1} << (N-1);
+    for (size_t i{0}; i < N ; ++i) {
+        bs = leadingOne | (std::bitset<N>{1} << i);
+        ASSERT_EQ(findLsbSet(bs), i);
+    }
 }
 
 /*
@@ -455,4 +485,41 @@ TEST(BitfieldTest, CountLeadingZero64AllZeros)
 {
     uint64_t value = 0;
     EXPECT_EQ(64, clz64(value));
+}
+
+/*
+ * This test simply check the the single bit decoding
+ * a) The 1 pattern returns true for 0b1 and false for 0b0
+ * b) The 0 pattern returns true for 0b0 and false for 0b1
+ * c) The X pattern returns true for both 0b0 and 0b1
+ */
+TEST(BitfieldTest, DecodeMaskOneBit)
+{
+    constexpr auto decode_1 = bitPatternMatcher<uint8_t, 0, 0, '1'>();
+    EXPECT_FALSE(decode_1(0b0));
+    EXPECT_TRUE(decode_1(0b1));
+
+    constexpr auto decode_0 = bitPatternMatcher<uint8_t, 0, 0, '0'>();
+    EXPECT_TRUE(decode_0(0b0));
+    EXPECT_FALSE(decode_0(0b1));
+
+    constexpr auto decode_x = bitPatternMatcher<uint8_t, 0, 0, 'X'>();
+    EXPECT_TRUE(decode_x(0b0));
+    EXPECT_TRUE(decode_x(0b1));
+}
+
+/*
+ * This test tries to match multiple bits (4)
+ * with the 101X pattern
+ */
+TEST(BitfieldTest, DecodeMaskMultipleBits)
+{
+    constexpr auto decode = bitPatternMatcher<
+        uint8_t, 3, 0, '1', '0', '1', 'X'>();
+
+    EXPECT_FALSE(decode(0b0000));
+    EXPECT_FALSE(decode(0b0010));
+
+    EXPECT_TRUE(decode(0b1010));
+    EXPECT_TRUE(decode(0b1011));
 }

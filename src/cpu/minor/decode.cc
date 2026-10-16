@@ -52,7 +52,6 @@
 namespace gem5
 {
 
-    GEM5_DEPRECATED_NAMESPACE(Minor, minor);
     namespace minor
     {
 
@@ -220,6 +219,7 @@ namespace gem5
 
                 DPRINTF(Branch, "Trying to predict for inst: %s\n", *inst);
 
+                cpu.fetchStats[inst->id.threadId]->numBranches++;
                 if (branchPredictor.predict(inst->staticInst,
                                             inst->id.fetchSeqNum, *inst_pc, inst->id.threadId))
                 {
@@ -554,8 +554,16 @@ namespace gem5
         StaticInstPtr
         Decode::extractMicroInst(ThreadID tid, StaticInstPtr static_inst)
         {
-            return static_inst->fetchMicroop(
-                decodeInfo[tid].microopPC->microPC());
+            MicroPC micro_pc = decodeInfo[tid].microopPC->microPC();
+
+            if (isRomMicroPC(micro_pc))
+            {
+                auto *dec_ptr = cpu.getContext(tid)->getDecoderPtr();
+                return dec_ptr->fetchRomMicroop(micro_pc, static_inst);
+            }
+
+            /* Get the micro-op static instruction from the static_inst. */
+            return static_inst->fetchMicroop(micro_pc);
         }
 
         /*
@@ -993,6 +1001,8 @@ namespace gem5
                                     stats.fpInstructions++;
                                 else if (decoded_inst->isInteger())
                                     stats.intInstructions++;
+
+                                cpu.fetchStats[tid]->numInsts++;
 
                                 DPRINTF(Decode, "Instruction extracted from line %s"
                                                 " lineWidth: %d output_index: %d inputIndex: %d"

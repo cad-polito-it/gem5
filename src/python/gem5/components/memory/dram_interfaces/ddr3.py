@@ -43,7 +43,7 @@
 These memory "interfaces" contain the timing, energy, etc. parameters for each
 memory type and are usually based on datasheets for the memory devices.
 
-You can use these interfaces in the MemCtrl object as the `dram` timing
+You can use these interfaces in the MemCtrl object as the ``dram`` timing
 interface.
 """
 
@@ -67,7 +67,7 @@ class DDR3_1600_8x8(DRAMInterface):
     # DDR3 is a BL8 device
     burst_length = 8
 
-    # Each device has a page (row buffer) size of 1 Kbyte (1K columns x8)
+    # Each device has a page (row buffer) size of 1 Kibibyte (1Ki columns x8)
     device_rowbuffer_size = "1KiB"
 
     # 8x8 configuration, so 8 devices

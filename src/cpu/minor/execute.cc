@@ -58,7 +58,6 @@
 namespace gem5
 {
 
-    GEM5_DEPRECATED_NAMESPACE(Minor, minor);
     namespace minor
     {
 
@@ -93,7 +92,8 @@ namespace gem5
                                                                                  ExecuteThreadInfo(params.executeCommitLimit)),
                                                                      interruptPriority(0),
                                                                      issuePriority(0),
-                                                                     commitPriority(0)
+                                                                     commitPriority(0),
+                                                                     issueStats(&cpu_)
         {
             if (commitLimit < 1)
             {
@@ -453,7 +453,9 @@ namespace gem5
                 inst->traceData->setPredicate((use_context_predicate ? context.readPredicate() : false));
             }
 
-            doInstCommitAccounting(inst);
+            /* Don't count faulting instructions in the commit stats */
+            if (fault == NoFault)
+                doInstCommitAccounting(inst);
 
             /* Generate output to account for branches */
             tryToBranch(inst, fault, branch);
@@ -643,6 +645,22 @@ namespace gem5
                         *inst);
                 thread.inFUMemInsts->push(fu_inst);
             }
+
+            if (!inst->isFault())
+            {
+                /* Update ALU access stats. */
+                if (inst->staticInst->isInteger())
+                    cpu.executeStats[thread_id]->numIntAluAccesses++;
+                if (inst->staticInst->isFloating())
+                    cpu.executeStats[thread_id]->numFpAluAccesses++;
+                if (inst->staticInst->isVector())
+                    cpu.executeStats[thread_id]->numVecAluAccesses++;
+
+                /* Update the # of insts. issued per OpClass type */
+                auto opclass = inst->staticInst->opClass();
+                issueStats.issuedInstType[thread_id][opclass]++;
+            }
+
             /* Issue to FU */
             fu->push(fu_inst);
 
@@ -878,10 +896,6 @@ namespace gem5
             /* Number of memory ops issues this cycle to check for memoryIssueLimit */
             unsigned num_mem_insts_issued = 0;
 
-            /* Number of instructions discarded this cycle in order to enforce a
-             *  discardLimit. @todo, add that parameter? */
-            unsigned num_insts_discarded = 0;
-
             do
             {
                 MinorDynInstPtr inst = insts_in->insts[thread.inputIndex];
@@ -921,11 +935,7 @@ namespace gem5
                     if (issued_mem_ref)
                         num_mem_insts_issued++;
 
-                    if (discarded)
-                    {
-                        num_insts_discarded++;
-                    }
-                    else if (!inst->isBubble())
+                    if (!discarded && !inst->isBubble())
                     {
                         num_insts_issued++;
 
@@ -995,8 +1005,10 @@ namespace gem5
         Execute::doInstCommitAccounting(MinorDynInstPtr inst)
         {
             assert(!inst->isFault());
-
-            MinorThread *thread = cpu.threads[inst->id.threadId];
+            bool is_nop = inst->staticInst->isNop();
+            const ThreadID tid = inst->id.threadId;
+            MinorThread *thread = cpu.threads[tid];
+            const bool in_user_mode = thread->getIsaPtr()->inUserMode();
 
             /* Increment the many and various inst and op counts in the
              *  thread and system */
@@ -1004,52 +1016,77 @@ namespace gem5
             {
                 thread->numInst++;
                 thread->threadStats.numInsts++;
-                cpu.stats.numInsts++;
+                cpu.commitStats[tid]->numInsts++;
+                cpu.executeStats[tid]->numInsts++;
+                cpu.baseStats.numInsts++;
+                if (in_user_mode)
+                {
+                    cpu.commitStats[tid]->numUserInsts++;
+                }
+
+                if (!is_nop)
+                {
+                    cpu.commitStats[tid]->numInstsNotNOP++;
+                }
 
                 /* Act on events related to instruction counts */
                 thread->comInstEventQueue.serviceEvents(thread->numInst);
             }
+
             thread->numOp++;
             thread->threadStats.numOps++;
-            cpu.stats.numOps++;
-            cpu.stats.committedInstType[inst->id.threadId]
-                                       [inst->staticInst->opClass()]++;
+            if (!is_nop)
+            {
+                cpu.commitStats[tid]->numOpsNotNOP++;
+            }
 
-            /** Add a count for every control instruction */
+            if (inst->staticInst->isMemRef())
+            {
+                cpu.executeStats[tid]->numMemRefs++;
+                cpu.commitStats[tid]->numMemRefs++;
+                thread->threadStats.numMemRefs++;
+            }
+            if (inst->staticInst->isLoad())
+            {
+                cpu.executeStats[tid]->numLoadInsts++;
+                cpu.commitStats[tid]->numLoadInsts++;
+            }
+            if (inst->staticInst->isStore() || inst->staticInst->isAtomic())
+            {
+                cpu.commitStats[tid]->numStoreInsts++;
+            }
+            if (inst->staticInst->isInteger())
+            {
+                cpu.commitStats[tid]->numIntInsts++;
+            }
+            if (inst->staticInst->isFloating())
+            {
+                cpu.commitStats[tid]->numFpInsts++;
+            }
+            if (inst->staticInst->isVector())
+            {
+                cpu.commitStats[tid]->numVecInsts++;
+            }
             if (inst->staticInst->isControl())
             {
-                if (inst->staticInst->isReturn())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsReturn]++;
-                }
-                if (inst->staticInst->isCall())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsCall]++;
-                }
-                if (inst->staticInst->isDirectCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsDirectControl]++;
-                }
-                if (inst->staticInst->isIndirectCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsIndirectControl]++;
-                }
-                if (inst->staticInst->isCondCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsCondControl]++;
-                }
-                if (inst->staticInst->isUncondCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsUncondControl]++;
-                }
-                cpu.stats.committedControl[inst->id.threadId]
-                                          [gem5::StaticInstFlags::Flags::IsControl]++;
+                cpu.executeStats[tid]->numBranches++;
+            }
+            if (inst->staticInst->isCall() || inst->staticInst->isReturn())
+            {
+                cpu.commitStats[tid]->numCallsReturns++;
+            }
+            if (inst->staticInst->isCall())
+            {
+                cpu.commitStats[tid]->functionCalls++;
+            }
+
+            cpu.commitStats[tid]->numOps++;
+            cpu.commitStats[tid]
+                ->committedInstType[inst->staticInst->opClass()]++;
+            cpu.commitStats[tid]->updateComCtrlStats(inst->staticInst);
+            if (in_user_mode)
+            {
+                cpu.commitStats[tid]->numUserOps++;
             }
 
             /* Set the CP SeqNum to the numOps commit number */
@@ -1156,7 +1193,7 @@ namespace gem5
                                         " inst: %s\n",
                         thread_id, *inst);
 
-                cpu.stats.numFetchSuspends++;
+                cpu.fetchStats[thread_id]->numFetchSuspends++;
 
                 updateBranchData(thread_id, BranchData::SuspendThread, inst,
                                  resume_pc, branch);
@@ -1769,7 +1806,7 @@ namespace gem5
                             *inst, ex_info.streamSeqNum);
 
                     if (fault == NoFault)
-                        cpu.stats.numDiscardedOps++;
+                        cpu.executeStats[inst->id.threadId]->numDiscardedOps++;
                 }
 
                 if (completed_inst && inst->isMemRef())
@@ -2471,6 +2508,16 @@ namespace gem5
                     setDrainState(commit_tid, DrainAllInsts);
                 }
             }
+        }
+
+        Execute::IssueStats::IssueStats(MinorCPU *cpu)
+            : statistics::Group(cpu),
+              ADD_STAT(issuedInstType, statistics::units::Count::get(),
+                       "Number of instructions issued per FU type, per thread")
+        {
+            issuedInstType.init(cpu->numThreads, enums::Num_OpClass)
+                .flags(statistics::total | statistics::pdf | statistics::dist);
+            issuedInstType.ysubnames(enums::OpClassStrings);
         }
 
     } // namespace minor

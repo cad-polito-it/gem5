@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2022-2023 The University of Edinburgh
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2014 The University of Wisconsin
  *
  * Copyright (c) 2006 INRIA (Institut National de Recherche en
@@ -50,8 +62,9 @@
 
 #include <vector>
 
+#include "base/random.hh"
 #include "base/types.hh"
-#include "cpu/pred/bpred_unit.hh"
+#include "cpu/pred/conditional.hh"
 #include "cpu/pred/tage_base.hh"
 #include "params/TAGE.hh"
 
@@ -61,16 +74,19 @@ namespace gem5
 namespace branch_prediction
 {
 
-class TAGE: public BPredUnit
+class TAGE: public ConditionalPredictor
 {
   protected:
     TAGEBase *tage;
+
+    Random::RandomPtr rng = Random::genRandom();
 
     struct TageBranchInfo
     {
         TAGEBase::BranchInfo *tageBranchInfo;
 
-        TageBranchInfo(TAGEBase &tage) : tageBranchInfo(tage.makeBranchInfo())
+        TageBranchInfo(TAGEBase &tage, Addr pc, bool conditional)
+        : tageBranchInfo(tage.makeBranchInfo(pc, conditional))
         {}
 
         virtual ~TageBranchInfo()
@@ -87,13 +103,16 @@ class TAGE: public BPredUnit
     TAGE(const TAGEParams &params);
 
     // Base class methods.
-    void uncondBranch(ThreadID tid, Addr br_pc, void* &bp_history) override;
-    bool lookup(ThreadID tid, Addr branch_addr, void* &bp_history) override;
-    void btbUpdate(ThreadID tid, Addr branch_addr, void* &bp_history) override;
-    void update(ThreadID tid, Addr branch_addr, bool taken, void *bp_history,
-                bool squashed, const StaticInstPtr & inst,
-                Addr corrTarget) override;
-    virtual void squash(ThreadID tid, void *bp_history) override;
+    bool lookup(ThreadID tid, Addr pc, void* &bp_history) override;
+    void updateHistories(ThreadID tid, Addr pc, bool uncond,
+                         bool taken, Addr target, const StaticInstPtr &inst,
+                         void * &bp_history) override;
+    void update(ThreadID tid, Addr pc, bool taken, void * &bp_history,
+                bool squashed, const StaticInstPtr &inst,
+                Addr target) override;
+    void squash(ThreadID tid, void * &bp_history) override;
+    void branchPlaceholder(ThreadID tid, Addr pc,
+                           bool uncond, void * &bp_history) override;
 };
 
 } // namespace branch_prediction

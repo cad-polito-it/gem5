@@ -61,9 +61,11 @@ _start:
         orr	x0, x0, #(1 << 10)		// 64-bit EL2
         orr	x0, x0, #(1 << 16)		// Disable FEAT_PAuth traps (APK)
         orr	x0, x0, #(1 << 17)		// Disable FEAT_PAuth traps (API)
+        orr     x0, x0, #(1 << 38)              // Enable HXEn
         msr	scr_el3, x0
 
         mov	x0, #(1 << 8)			// Disable SVE trap to EL3
+        orr	x0, x0, #(1 << 12)		// Disable SME trap to EL3
         msr	cptr_el3, x0			// Disable copro. traps to EL3
 
         /*

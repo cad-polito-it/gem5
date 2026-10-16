@@ -28,8 +28,8 @@
 #
 # "m5 test.py"
 
-import os
 import argparse
+import os
 import sys
 
 import m5
@@ -51,9 +51,9 @@ parser.add_argument(
 parser.add_argument(
     "-f", "--frequency", default="1GHz", help="Frequency of each CPU"
 )
-parser.add_argument("--l1size", default="32kB")
+parser.add_argument("--l1size", default="32KiB")
 parser.add_argument("--l1latency", default=1)
-parser.add_argument("--l2size", default="256kB")
+parser.add_argument("--l2size", default="256KiB")
 parser.add_argument("--l2latency", default=10)
 parser.add_argument(
     "--rootdir",
@@ -63,6 +63,7 @@ parser.add_argument(
 parser.add_argument("-b", "--benchmark", help="Splash 2 benchmark to run")
 
 args = parser.parse_args()
+
 
 # --------------------
 # Define Splash2 Benchmarks

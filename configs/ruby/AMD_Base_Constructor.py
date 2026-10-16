@@ -28,15 +28,21 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import math
+
 import m5
-from m5.objects import *
 from m5.defines import buildEnv
-from m5.util import addToPath, convert
+from m5.objects import *
+from m5.util import (
+    addToPath,
+    convert,
+)
+
 from .CntrlBase import *
 
 addToPath("../")
 
 from topologies.Cluster import Cluster
+
 
 #
 # Note: the L1 Cache latency is only used by the sequencer on fast path hits
@@ -78,14 +84,14 @@ class CPCntrl(AMD_Base_Controller, CntrlBase):
         self.L2cache = L2Cache()
         self.L2cache.create(options.l2_size, options.l2_assoc, options)
 
-        self.sequencer = RubySequencer()
+        self.sequencer = RubySequencer(ruby_system=ruby_system)
         self.sequencer.version = self.seqCount()
         self.sequencer.dcache = self.L1D0cache
         self.sequencer.ruby_system = ruby_system
         self.sequencer.coreid = 0
         self.sequencer.is_cpu_sequencer = True
 
-        self.sequencer1 = RubySequencer()
+        self.sequencer1 = RubySequencer(ruby_system=ruby_system)
         self.sequencer1.version = self.seqCount()
         self.sequencer1.dcache = self.L1D1cache
         self.sequencer1.ruby_system = ruby_system
@@ -115,7 +121,6 @@ def construct(options, system, ruby_system):
     cpuCluster = None
     cpuCluster = Cluster(name="CPU Cluster", extBW=8, intBW=8)  # 16 GB/s
     for i in range((options.num_cpus + 1) // 2):
-
         cp_cntrl = CPCntrl()
         cp_cntrl.create(options, ruby_system, system)
 

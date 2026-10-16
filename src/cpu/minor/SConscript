@@ -40,7 +40,7 @@
 
 Import('*')
 
-if not env['CONF']['USE_NULL_ISA']:
+if env['CONF']['BUILD_ISA']:
     SimObject('BaseMinorCPU.py', sim_objects=[
         'MinorOpClass', 'MinorOpClassSet', 'MinorFUTiming', 'MinorFU',
         'MinorFUPool', 'BaseMinorCPU'],
@@ -79,4 +79,4 @@ if not env['CONF']['USE_NULL_ISA']:
         'MinorScoreboard'])
 
     # For backwards compatibility
-    SimObject('MinorCPU.py', sim_objects=[])
+    SimObject('MinorCPU.py', sim_objects=[], tags=['isa'])

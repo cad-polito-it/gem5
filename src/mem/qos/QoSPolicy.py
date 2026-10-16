@@ -33,8 +33,9 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.SimObject import *
 from m5.params import *
+from m5.SimObject import *
+
 
 # QoS scheduler policy used to serve incoming transaction
 class QoSPolicy(SimObject):
@@ -61,14 +62,6 @@ class QoSFixedPriorityPolicy(QoSPolicy):
             self._requestor_priorities = []
 
         self._requestor_priorities.append([request_port, priority])
-
-    def setMasterPriority(self, request_port, priority):
-        warn(
-            "QosFixedPriority.setMasterPriority is deprecated in favor of "
-            "setRequestorPriority. See src/mem/qos/QoSPolicy.py for more "
-            "information"
-        )
-        self.setRequestorPriority(request_port, priority)
 
     def init(self):
         if not self._requestor_priorities:

@@ -1,2 +1,5 @@
-USE_MIPS_ISA = True
-PROTOCOL = 'MI_example'
+RUBY=y
+PROTOCOL="MI_example"
+RUBY_PROTOCOL_MI_example=y
+BUILD_ISA=y
+USE_MIPS_ISA=y

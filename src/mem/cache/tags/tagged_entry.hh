@@ -1,4 +1,16 @@
 /**
+ * Copyright (c) 2024 Arm Limited
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2020 Inria
  * All rights reserved.
  *
@@ -34,9 +46,61 @@
 #include "base/cprintf.hh"
 #include "base/types.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
+#include "mem/cache/tags/indexing_policies/base.hh"
+#include "params/TaggedIndexingPolicy.hh"
+#include "params/TaggedSetAssociative.hh"
 
 namespace gem5
 {
+
+class TaggedTypes
+{
+  public:
+    struct KeyType
+    {
+        Addr address;
+        bool secure;
+    };
+    using Params = TaggedIndexingPolicyParams;
+};
+
+using TaggedIndexingPolicy = IndexingPolicyTemplate<TaggedTypes>;
+template class IndexingPolicyTemplate<TaggedTypes>;
+
+/**
+ * This version of set associative indexing deals with
+ * a Lookup structure made of address and secure bit.
+ * It extracts the address but discards the secure bit which
+ * is used for tagging only
+ */
+class TaggedSetAssociative : public TaggedIndexingPolicy
+{
+  protected:
+    virtual uint32_t
+    extractSet(const KeyType &key) const
+    {
+        return (key.address >> setShift) & setMask;
+    }
+
+  public:
+    PARAMS(TaggedSetAssociative);
+    TaggedSetAssociative(const Params &p)
+      : TaggedIndexingPolicy(p, p.size / p.entry_size, floorLog2(p.entry_size))
+    {}
+
+    std::vector<ReplaceableEntry*>
+    getPossibleEntries(const KeyType &key) const override
+    {
+        return sets[extractSet(key)];
+    }
+
+    Addr
+    regenerateAddr(const KeyType &key,
+                   const ReplaceableEntry *entry) const override
+    {
+        return (key.address << tagShift) | (entry->getSet() << setShift);
+    }
+};
 
 /**
  * A tagged entry is an entry containing a tag. Each tag is accompanied by a
@@ -46,8 +110,20 @@ namespace gem5
 class TaggedEntry : public ReplaceableEntry
 {
   public:
-    TaggedEntry() : _valid(false), _secure(false), _tag(MaxAddr) {}
+    using KeyType = TaggedTypes::KeyType;
+    using IndexingPolicy = TaggedIndexingPolicy;
+    using TagExtractor = std::function<Addr(Addr)>;
+
+    TaggedEntry()
+      : _valid(false), _secure(false), _tag(MaxAddr)
+    {}
     ~TaggedEntry() = default;
+
+    void
+    registerTagExtractor(TagExtractor ext)
+    {
+        extractTag = ext;
+    }
 
     /**
      * Checks if the entry is valid.
@@ -77,10 +153,12 @@ class TaggedEntry : public ReplaceableEntry
      * @param is_secure Whether secure bit is set.
      * @return True if the tag information match this entry's.
      */
-    virtual bool
-    matchTag(Addr tag, bool is_secure) const
+    bool
+    match(const KeyType &key) const
     {
-        return isValid() && (getTag() == tag) && (isSecure() == is_secure);
+        assert(extractTag);
+        return isValid() && (getTag() == extractTag(key.address)) &&
+            (isSecure() == key.secure);
     }
 
     /**
@@ -90,11 +168,12 @@ class TaggedEntry : public ReplaceableEntry
      * @param tag The tag value.
      */
     virtual void
-    insert(const Addr tag, const bool is_secure)
+    insert(const KeyType &key)
     {
+        assert(extractTag);
         setValid();
-        setTag(tag);
-        if (is_secure) {
+        setTag(extractTag(key.address));
+        if (key.secure) {
             setSecure();
         }
     }
@@ -125,6 +204,9 @@ class TaggedEntry : public ReplaceableEntry
     /** Set secure bit. */
     virtual void setSecure() { _secure = true; }
 
+    /** Clear secure bit. Should be only used by the invalidation function. */
+    void clearSecure() { _secure = false; }
+
     /** Set valid bit. The block must be invalid beforehand. */
     virtual void
     setValid()
@@ -132,6 +214,9 @@ class TaggedEntry : public ReplaceableEntry
         assert(!isValid());
         _valid = true;
     }
+
+    /** Callback used to extract the tag from the entry */
+    TagExtractor extractTag;
 
   private:
     /**
@@ -149,10 +234,21 @@ class TaggedEntry : public ReplaceableEntry
 
     /** The entry's tag. */
     Addr _tag;
-
-    /** Clear secure bit. Should be only used by the invalidation function. */
-    void clearSecure() { _secure = false; }
 };
+
+/**
+ * This helper generates an a tag extractor function object
+ * which will be typically used by Replaceable entries indexed
+ * with the TaggedIndexingPolicy.
+ * It allows to "decouple" indexing from tagging. Those entries
+ * would call the functor without directly holding a pointer
+ * to the indexing policy which should reside in the cache.
+ */
+static constexpr auto
+genTagExtractor(TaggedIndexingPolicy *ip)
+{
+    return [ip] (Addr addr) { return ip->extractTag(addr); };
+}
 
 } // namespace gem5
 

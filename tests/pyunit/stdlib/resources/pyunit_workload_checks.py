@@ -1,4 +1,4 @@
-# Copyright (c) 2022 The Regents of the University of California
+# Copyright (c) 2023 The Regents of the University of California
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -24,15 +24,35 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import unittest
-import tempfile
 import os
-
-from gem5.resources.workload import Workload, CustomWorkload
-from gem5.resources.resource import Resource
-from gem5.resources.downloader import _resources_json_version_required
-
+import unittest
+from pathlib import Path
 from typing import Dict
+from unittest.mock import patch
+
+from gem5.resources.client import (
+    _create_clients,
+    clientwrapper,
+)
+from gem5.resources.resource import (
+    BinaryResource,
+    DiskImageResource,
+    WorkloadResource,
+    obtain_resource,
+)
+from gem5.resources.workload import (
+    CustomWorkload,
+    Workload,
+)
+
+mock_config_json = {
+    "sources": {
+        "baba": {
+            "url": Path(__file__).parent / "refs/workload-checks.json",
+            "isMongo": False,
+        }
+    },
+}
 
 
 class CustomWorkloadTestSuite(unittest.TestCase):
@@ -41,81 +61,56 @@ class CustomWorkloadTestSuite(unittest.TestCase):
     """
 
     @classmethod
-    def setUpClass(cls) -> None:
-        file_contents = (
-            "{"
-            + f'"version" : "{_resources_json_version_required()}",'
-            + """
-        "url_base" : "http://dist.gem5.org/dist/v22-0",
-        "previous-versions" : {},
-        "resources": [
-        {
-            "type" : "resource",
-            "name" : "x86-hello64-static",
-            "documentation" : "A 'Hello World!' binary.",
-            "architecture" : "X86",
-            "is_zipped" :  false,
-            "md5sum" : "dbf120338b37153e3334603970cebd8c",
-            "url" : "{url_base}/test-progs/hello/bin/x86/linux/hello64-static",
-            "source" : "src/simple"
-        }
-    ]
-}
-        """
-        )
-        file = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        file.write(file_contents)
-        file.close()
-
-        cls.test_json = file.name
-        os.environ["GEM5_RESOURCE_JSON"] = cls.test_json
-
-        cls.custom_workload = CustomWorkload(
+    @patch(
+        "gem5.resources.client.clientwrapper",
+        new=None,
+    )
+    @patch(
+        "gem5.resources.client._create_clients",
+        side_effect=lambda x: _create_clients(mock_config_json),
+    )
+    def setUpClass(cls, mock_create_client) -> None:
+        cls.custom_workload = WorkloadResource(
             function="set_se_binary_workload",
             parameters={
-                "binary": Resource("x86-hello64-static"),
+                "binary": obtain_resource(
+                    "x86-hello64-static-example", gem5_version="develop"
+                ),
                 "arguments": ["hello", 6],
             },
         )
 
-    @classmethod
-    def tearDownClass(cls):
-        # Remove the test json file and unset the environment variable so this
-        # test does not interfere with others.
-        os.remove(cls.test_json)
-        os.environ["GEM5_RESOURCE_JSON"]
-
     def test_get_function_str(self) -> None:
-        # Tests `CustomResource.get_function_str`
+        # Tests `CustomWorkload.get_function_str`
 
         self.assertEqual(
             "set_se_binary_workload", self.custom_workload.get_function_str()
         )
 
     def test_get_parameters(self) -> None:
-        # Tests `CustomResource.get_parameter`
+        # Tests `CustomWorkload.get_parameter`
 
         parameters = self.custom_workload.get_parameters()
         self.assertTrue(isinstance(parameters, Dict))
-        self.assertEquals(2, len(parameters))
+        self.assertEqual(2, len(parameters))
 
         self.assertTrue("binary" in parameters)
-        self.assertTrue(isinstance(parameters["binary"], Resource))
+        self.assertTrue(isinstance(parameters["binary"], BinaryResource))
 
         self.assertTrue("arguments" in parameters)
         self.assertTrue(isinstance(parameters["arguments"], list))
-        self.assertEquals(2, len(parameters["arguments"]))
-        self.assertEquals("hello", parameters["arguments"][0])
-        self.assertEquals(6, parameters["arguments"][1])
+        self.assertEqual(2, len(parameters["arguments"]))
+        self.assertEqual("hello", parameters["arguments"][0])
+        self.assertEqual(6, parameters["arguments"][1])
 
     def test_add_parameters(self) -> None:
-        # Tests `CustomResource.set_parameter` for the case where we add a new
+        # Tests `CustomWorkload.set_parameter` for the case where we add a new
         # parameter value.
 
         self.custom_workload.set_parameter("test_param", 10)
 
         self.assertTrue("test_param" in self.custom_workload.get_parameters())
-        self.assertEquals(
+        self.assertEqual(
             10, self.custom_workload.get_parameters()["test_param"]
         )
 
@@ -123,18 +118,18 @@ class CustomWorkloadTestSuite(unittest.TestCase):
         del self.custom_workload.get_parameters()["test_param"]
 
     def test_override_parameter(self) -> None:
-        # Tests `CustomResource.set_parameter` for the case where we override
+        # Tests `CustomWorkload.set_parameter` for the case where we override
         # a parameter's value.
 
         old_value = self.custom_workload.get_parameters()["binary"]
 
         self.custom_workload.set_parameter("binary", "test")
         self.assertTrue("binary" in self.custom_workload.get_parameters())
-        self.assertEquals(
+        self.assertEqual(
             "test", self.custom_workload.get_parameters()["binary"]
         )
 
-        # We set the overridden parameter back to it's old value.
+        # We set the overridden parameter back to it's old value
         self.custom_workload.set_parameter("binary", old_value)
 
 
@@ -144,76 +139,21 @@ class WorkloadTestSuite(unittest.TestCase):
     """
 
     @classmethod
-    def setUpClass(cls):
-        # In this constructor we create a json file to load then create a test
-        # workload.
-
-        file_contents = (
-            "{"
-            + f'"version" : "{_resources_json_version_required()}",'
-            + """
-        "url_base" : "http://dist.gem5.org/dist/v22-0",
-        "previous-versions" : {},
-        "resources": [
-        {
-            "type" : "resource",
-            "name" : "x86-linux-kernel-5.2.3",
-            "documentation" : "The linux kernel (v5.2.3), compiled to X86.",
-            "architecture" : "X86",
-            "is_zipped" : false,
-            "md5sum" : "4838c99b77d33c8307b939c16624e4ac",
-            "url" : "{url_base}/kernels/x86/static/vmlinux-5.2.3",
-            "source" : "src/linux-kernel"
-        },
-        {
-            "type" : "resource",
-            "name" : "x86-ubuntu-18.04-img",
-            "documentation" : "A disk image containing Ubuntu 18.04 for x86..",
-            "architecture" : "X86",
-            "is_zipped" : true,
-            "md5sum" : "90e363abf0ddf22eefa2c7c5c9391c49",
-            "url" : "{url_base}/images/x86/ubuntu-18-04/x86-ubuntu.img.gz",
-            "source" : "src/x86-ubuntu",
-            "additional_metadata" : {
-                "root_partition": "1"
-            }
-        },
-        {
-            "type" : "workload",
-            "name" : "simple-boot",
-            "documentation" : "Description of workload here",
-            "function" : "set_kernel_disk_workload",
-            "resources" : {
-                "kernel" : "x86-linux-kernel-5.2.3",
-                "disk_image" : "x86-ubuntu-18.04-img"
-            },
-            "additional_params" : {
-                "readfile_contents" : "echo 'Boot successful'; m5 exit"
-            }
-        }
-    ]
-}
-        """
-        )
-        file = tempfile.NamedTemporaryFile(mode="w", delete=False)
-        file.write(file_contents)
-        file.close()
-
-        cls.test_json = file.name
-        os.environ["GEM5_RESOURCE_JSON"] = cls.test_json
-        cls.workload = Workload("simple-boot")
-
-    @classmethod
-    def tearDownClass(cls):
-        # Remove the test json file and unset the environment variable so this
-        # test does not interfere with others.
-        os.remove(cls.test_json)
-        os.environ["GEM5_RESOURCE_JSON"]
+    @patch(
+        "gem5.resources.client.clientwrapper",
+        new=None,
+    )
+    @patch(
+        "gem5.resources.client._create_clients",
+        side_effect=lambda x: _create_clients(mock_config_json),
+    )
+    def setUpClass(cls, mock_create_client):
+        cls.workload = obtain_resource("simple-boot", gem5_version="develop")
 
     def test_get_function_str(self) -> None:
         # Tests `Resource.get_function_str`
 
-        self.assertEquals(
+        self.assertEqual(
             "set_kernel_disk_workload", self.workload.get_function_str()
         )
 
@@ -226,10 +166,12 @@ class WorkloadTestSuite(unittest.TestCase):
         self.assertEqual(3, len(parameters))
 
         self.assertTrue("kernel" in parameters)
-        self.assertTrue(isinstance(parameters["kernel"], Resource))
+        self.assertTrue(isinstance(parameters["kernel"], BinaryResource))
 
-        self.assertTrue("disk_image" in parameters)
-        self.assertTrue(isinstance(parameters["disk_image"], Resource))
+        self.assertTrue("disk-image" in parameters)
+        self.assertTrue(
+            isinstance(parameters["disk-image"], DiskImageResource)
+        )
 
         self.assertTrue("readfile_contents" in parameters)
         self.assertTrue(
@@ -243,7 +185,7 @@ class WorkloadTestSuite(unittest.TestCase):
         self.workload.set_parameter("test_param", 10)
 
         self.assertTrue("test_param" in self.workload.get_parameters())
-        self.assertEquals(10, self.workload.get_parameters()["test_param"])
+        self.assertEqual(10, self.workload.get_parameters()["test_param"])
 
         # Cleanup
         del self.workload.get_parameters()["test_param"]
@@ -256,9 +198,147 @@ class WorkloadTestSuite(unittest.TestCase):
 
         self.workload.set_parameter("readfile_contents", "test")
         self.assertTrue("readfile_contents" in self.workload.get_parameters())
-        self.assertEquals(
+        self.assertEqual(
             "test", self.workload.get_parameters()["readfile_contents"]
         )
 
         # We set the overridden parameter back to it's old value.
         self.workload.set_parameter("readfile_contents", old_value)
+
+
+class MultiBinaryWorkloadTestSuite(unittest.TestCase):
+    """
+    Tests the `gem5.resources.workload.Workload` class with multiple binary
+    resources (list of resources).
+    """
+
+    @classmethod
+    @patch(
+        "gem5.resources.client.clientwrapper",
+        new=None,
+    )
+    @patch(
+        "gem5.resources.client._create_clients",
+        side_effect=lambda x: _create_clients(mock_config_json),
+    )
+    def setUpClass(cls, mock_create_client):
+        cls.multi_binary_workload = WorkloadResource(
+            function="set_se_multi_binary_workload",
+            parameters={
+                "binaries": [
+                    obtain_resource(
+                        "x86-hello64-static-example", gem5_version="develop"
+                    ),
+                    obtain_resource(
+                        "x86-hello64-static-example", gem5_version="develop"
+                    ),
+                ],
+                "arguments": [],
+            },
+        )
+
+    def test_get_function_str(self) -> None:
+        # Tests `WorkloadResource.get_function_str` for multi-binary workload
+
+        self.assertEqual(
+            "set_se_multi_binary_workload",
+            self.multi_binary_workload.get_function_str(),
+        )
+
+    def test_get_parameters(self) -> None:
+        # Tests `WorkloadResource.get_parameters` for multi-binary workload
+
+        parameters = self.multi_binary_workload.get_parameters()
+        self.assertTrue(isinstance(parameters, Dict))
+        self.assertEqual(2, len(parameters))
+
+        self.assertTrue("binaries" in parameters)
+        self.assertTrue(isinstance(parameters["binaries"], list))
+        self.assertEqual(2, len(parameters["binaries"]))
+
+        # Verify each element in the binaries list is a BinaryResource
+        for binary in parameters["binaries"]:
+            self.assertTrue(isinstance(binary, BinaryResource))
+
+        self.assertTrue("arguments" in parameters)
+        self.assertTrue(isinstance(parameters["arguments"], list))
+
+    def test_add_parameters(self) -> None:
+        # Tests `WorkloadResource.set_parameter` for the case where we add a
+        # new parameter value to a multi-binary workload.
+
+        self.multi_binary_workload.set_parameter("test_param", 10)
+
+        self.assertTrue(
+            "test_param" in self.multi_binary_workload.get_parameters()
+        )
+        self.assertEqual(
+            10, self.multi_binary_workload.get_parameters()["test_param"]
+        )
+
+        # Cleanup
+        del self.multi_binary_workload.get_parameters()["test_param"]
+
+    @patch(
+        "gem5.resources.client.clientwrapper",
+        new=None,
+    )
+    @patch(
+        "gem5.resources.client._create_clients",
+        side_effect=lambda x: _create_clients(mock_config_json),
+    )
+    def test_override_parameter_with_list(self, mock_create_client) -> None:
+        # Tests `WorkloadResource.set_parameter` for the case where we
+        # override a list parameter's value.
+
+        old_value = self.multi_binary_workload.get_parameters()["binaries"]
+
+        new_binaries = [
+            obtain_resource(
+                "x86-hello64-static-example", gem5_version="develop"
+            )
+        ]
+        self.multi_binary_workload.set_parameter("binaries", new_binaries)
+
+        self.assertTrue(
+            "binaries" in self.multi_binary_workload.get_parameters()
+        )
+        self.assertEqual(
+            1, len(self.multi_binary_workload.get_parameters()["binaries"])
+        )
+
+        # We set the overridden parameter back to its old value
+        self.multi_binary_workload.set_parameter("binaries", old_value)
+
+    @patch(
+        "gem5.resources.client.clientwrapper",
+        new=None,
+    )
+    @patch(
+        "gem5.resources.client._create_clients",
+        side_effect=lambda x: _create_clients(mock_config_json),
+    )
+    def test_append_to_binaries_list(self, mock_create_client) -> None:
+        # Tests that we can append additional binaries to the list
+
+        original_count = len(
+            self.multi_binary_workload.get_parameters()["binaries"]
+        )
+
+        new_binary = obtain_resource(
+            "x86-hello64-static-example", gem5_version="develop"
+        )
+        current_binaries = self.multi_binary_workload.get_parameters()[
+            "binaries"
+        ]
+        current_binaries.append(new_binary)
+        self.multi_binary_workload.set_parameter("binaries", current_binaries)
+
+        self.assertEqual(
+            original_count + 1,
+            len(self.multi_binary_workload.get_parameters()["binaries"]),
+        )
+
+        # Cleanup - remove the appended binary
+        current_binaries.pop()
+        self.multi_binary_workload.set_parameter("binaries", current_binaries)

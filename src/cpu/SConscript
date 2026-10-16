@@ -1,6 +1,6 @@
 # -*- mode:python -*-
 
-# Copyright (c) 2020 ARM Limited
+# Copyright (c) 2020, 2023 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -87,12 +87,16 @@ SimObject('FuncUnit.py', sim_objects=['OpDesc', 'FUDesc'], enums=['OpClass'])
 SimObject('StaticInstFlags.py', enums=['StaticInstFlags'])
 
 # Only build the protobuf instructions tracer if we have protobuf support.
-SimObject('InstPBTrace.py', sim_objects=['InstPBTrace'], tags='protobuf')
-Source('inst_pb_trace.cc', tags='protobuf')
-
-SimObject('CheckerCPU.py', sim_objects=['CheckerCPU'])
+if env['CONF']['HAVE_PROTOBUF']:
+    SimObject(
+        'InstPBTrace.py',
+        sim_objects=['InstPBTrace'],
+        tags=['protobuf']
+    )
+    Source('inst_pb_trace.cc', tags=['protobuf'])
 
 SimObject('BaseCPU.py', sim_objects=['BaseCPU'])
+SimObject('CpuCluster.py', sim_objects=['CpuCluster'])
 SimObject('CPUTracers.py', sim_objects=[
     'ExeTracer', 'IntelTrace', 'NativeTrace'])
 SimObject('TimingExpr.py', sim_objects=[
@@ -115,6 +119,11 @@ Source('thread_context.cc')
 Source('thread_state.cc')
 Source('timing_expr.cc')
 
+if env['CONF']['USE_CAPSTONE']:
+    SourceLib('capstone')
+    Source('capstone.cc')
+    SimObject('Capstone.py', sim_objects=['CapstoneDisassembler'])
+
 SimObject('DummyChecker.py', sim_objects=['DummyChecker'])
-Source('checker/cpu.cc')
+
 DebugFlag('Checker')

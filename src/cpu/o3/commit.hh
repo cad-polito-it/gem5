@@ -109,6 +109,7 @@ class Commit
         TrapPending,
         FetchTrapPending,
         SquashAfterPending, //< Committing instructions before a squash.
+        ThreadStatusMax
     };
 
   private:
@@ -167,7 +168,7 @@ class Commit
     void setActiveThreads(std::list<ThreadID> *at_ptr);
 
     /** Sets pointer to the commited state rename map. */
-    void setRenameMap(UnifiedRenameMap rm_ptr[MaxThreads]);
+    void setRenameMap(UnifiedRenameMap::PerThreadUnifiedRenameMap& rm_ptr);
 
     /** Sets pointer to the ROB. */
     void setROB(ROB *rob_ptr);
@@ -463,10 +464,16 @@ class Commit
 
     struct CommitStats : public statistics::Group
     {
+        static std::string statusStrings[ThreadStatusMax];
+        static std::string statusDefinitions[ThreadStatusMax];
+
         CommitStats(CPU *cpu, Commit *commit);
         /** Stat for the total number of squashed instructions discarded by
          * commit.
          */
+        /** Stat for total number of cycles spent in each commit state */
+        statistics::Vector status;
+
         statistics::Scalar commitSquashedInsts;
         /** Stat for the total number of times commit has had to stall due
          * to a non-speculative instruction reaching the head of the ROB.
@@ -479,28 +486,10 @@ class Commit
         /** Distribution of the number of committed instructions each cycle. */
         statistics::Distribution numCommittedDist;
 
-        /** Total number of instructions committed. */
-        statistics::Vector instsCommitted;
-        /** Total number of ops (including micro ops) committed. */
-        statistics::Vector opsCommitted;
-        /** Stat for the total number of committed memory references. */
-        statistics::Vector memRefs;
-        /** Stat for the total number of committed loads. */
-        statistics::Vector loads;
         /** Stat for the total number of committed atomics. */
         statistics::Vector amos;
         /** Total number of committed memory barriers. */
         statistics::Vector membars;
-        /** Total number of committed branches. */
-        statistics::Vector branches;
-        /** Total number of vector instructions */
-        statistics::Vector vectorInstructions;
-        /** Total number of floating point instructions */
-        statistics::Vector floating;
-        /** Total number of integer instructions */
-        statistics::Vector integer;
-        /** Total number of function calls */
-        statistics::Vector functionCalls;
         /** Committed instructions by instruction type (OpClass) */
         statistics::Vector2d committedInstType;
 

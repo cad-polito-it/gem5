@@ -35,8 +35,10 @@
 
 #include <string>
 
+#include "arch/riscv/isa.hh"
 #include "arch/riscv/regs/float.hh"
 #include "arch/riscv/regs/int.hh"
+#include "arch/riscv/regs/misc.hh"
 #include "base/remote_gdb.hh"
 
 namespace gem5
@@ -57,11 +59,90 @@ class RemoteGDB : public BaseRemoteGDB
     bool acc(Addr addr, size_t len) override;
     // A breakpoint will be 2 bytes if it is compressed and 4 if not
     bool checkBpKind(size_t kind) override { return kind == 2 || kind == 4; }
+    void insertHardBreak(Addr addr, size_t kind) override;
+    void removeHardBreak(Addr addr, size_t kind) override;
 
-    class RiscvGdbRegCache : public BaseGdbRegCache
+    class Riscv32GdbRegCache : public BaseGdbRegCache
     {
       using BaseGdbRegCache::BaseGdbRegCache;
-      private:
+      protected:
+        /**
+         * RISC-V Register Cache
+         * Order and sizes of registers found in ext/gdb-xml/riscv.xml
+         * To add support for more CSRs:
+         * 1. Uncomment relevant lines in ext/gdb-xml/riscv-32bit-csr.xml
+         * 2. Add register to struct below
+         * 3. Modify RiscvGdbRegCache::getRegs and setRegs
+         */
+        struct GEM5_PACKED
+        {
+            uint32_t gpr[int_reg::NumArchRegs];
+            uint32_t pc;
+            uint64_t fpu[float_reg::NumRegs];
+            uint32_t fflags;
+            uint32_t frm;
+            uint32_t fcsr;
+            // Placeholder for byte alignment
+            uint32_t placeholder;
+            uint32_t cycle;
+            uint32_t time;
+            uint32_t cycleh;
+            uint32_t timeh;
+            uint32_t sstatus;
+            uint32_t sie;
+            uint32_t stvec;
+            uint32_t scounteren;
+            uint32_t sscratch;
+            uint32_t sepc;
+            uint32_t scause;
+            uint32_t stval;
+            uint32_t sip;
+            uint32_t satp;
+            uint32_t senvcfg;
+            uint32_t mvendorid;
+            uint32_t marchid;
+            uint32_t mimpid;
+            uint32_t mhartid;
+            uint32_t mstatus;
+            uint32_t misa;
+            uint32_t medeleg;
+            uint32_t mideleg;
+            uint32_t mie;
+            uint32_t mtvec;
+            uint32_t mcounteren;
+            uint32_t mstatush;
+            uint32_t mscratch;
+            uint32_t mepc;
+            uint32_t mcause;
+            uint32_t mtval;
+            uint32_t mip;
+            uint32_t hstatus;
+            uint32_t hedeleg;
+            uint32_t hideleg;
+            uint32_t hie;
+            uint32_t htvec;
+            uint32_t hscratch;
+            uint32_t hepc;
+            uint32_t hcause;
+            uint32_t hbadaddr;
+            uint32_t hip;
+        } r;
+      public:
+        char *data() { return (char *)&r; }
+        size_t size() const { return sizeof(r); }
+        void getRegs(ThreadContext*);
+        void setRegs(ThreadContext*) const;
+
+        const std::string
+        name() const
+        {
+            return gdb->name() + ".RiscvGdbRegCache";
+        }
+    };
+    class Riscv64GdbRegCache : public BaseGdbRegCache
+    {
+      using BaseGdbRegCache::BaseGdbRegCache;
+      protected:
         /**
          * RISC-V Register Cache
          * Order and sizes of registers found in ext/gdb-xml/riscv.xml
@@ -70,7 +151,7 @@ class RemoteGDB : public BaseRemoteGDB
          * 2. Add register to struct below
          * 3. Modify RiscvGdbRegCache::getRegs and setRegs
          */
-        struct
+        struct GEM5_PACKED
         {
             uint64_t gpr[int_reg::NumArchRegs];
             uint64_t pc;
@@ -82,17 +163,7 @@ class RemoteGDB : public BaseRemoteGDB
             uint32_t placeholder;
             uint64_t cycle;
             uint64_t time;
-            uint64_t ustatus;
-            uint64_t uie;
-            uint64_t utvec;
-            uint64_t uscratch;
-            uint64_t uepc;
-            uint64_t ucause;
-            uint64_t utval;
-            uint64_t uip;
             uint64_t sstatus;
-            uint64_t sedeleg;
-            uint64_t sideleg;
             uint64_t sie;
             uint64_t stvec;
             uint64_t scounteren;
@@ -102,6 +173,7 @@ class RemoteGDB : public BaseRemoteGDB
             uint64_t stval;
             uint64_t sip;
             uint64_t satp;
+            uint64_t senvcfg;
             uint64_t mvendorid;
             uint64_t marchid;
             uint64_t mimpid;
@@ -130,7 +202,7 @@ class RemoteGDB : public BaseRemoteGDB
             uint64_t hip;
         } r;
       public:
-        char *data() const { return (char *)&r; }
+        char *data() { return (char *)&r; }
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
@@ -142,10 +214,11 @@ class RemoteGDB : public BaseRemoteGDB
         }
     };
 
-    RiscvGdbRegCache regCache;
+    Riscv32GdbRegCache regCache32;
+    Riscv64GdbRegCache regCache64;
 
   public:
-    RemoteGDB(System *_system, int _port);
+    RemoteGDB(System *_system, ListenSocketConfig _listen_config);
     BaseGdbRegCache *gdbRegs() override;
     /**
      * Informs GDB remote serial protocol that XML features are supported
@@ -161,6 +234,10 @@ class RemoteGDB : public BaseRemoteGDB
      */
     bool getXferFeaturesRead(const std::string &annex,
                              std::string &output) override;
+
+    virtual RiscvType getRvType(ThreadContext* tc);
+
+    virtual PrivilegeModeSet getPrivilegeModeSet(ThreadContext* tc);
 };
 
 } // namespace RiscvISA

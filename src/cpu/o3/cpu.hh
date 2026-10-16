@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2011-2013, 2016-2020 ARM Limited
  * Copyright (c) 2013 Advanced Micro Devices, Inc.
+ * Copyright (c) 2022-2023 The University of Edinburgh
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -51,20 +52,22 @@
 
 #include "arch/generic/pcstate.hh"
 #include "base/statistics.hh"
+#include "cpu/activity.hh"
+#include "cpu/base.hh"
+#include "cpu/o3/bac.hh"
 #include "cpu/o3/comm.hh"
 #include "cpu/o3/commit.hh"
 #include "cpu/o3/decode.hh"
 #include "cpu/o3/dyn_inst_ptr.hh"
 #include "cpu/o3/fetch.hh"
 #include "cpu/o3/free_list.hh"
+#include "cpu/o3/ftq.hh"
 #include "cpu/o3/iew.hh"
 #include "cpu/o3/limits.hh"
 #include "cpu/o3/rename.hh"
 #include "cpu/o3/rob.hh"
 #include "cpu/o3/scoreboard.hh"
 #include "cpu/o3/thread_state.hh"
-#include "cpu/activity.hh"
-#include "cpu/base.hh"
 #include "cpu/simple_thread.hh"
 #include "cpu/timebuf.hh"
 #include "params/BaseO3CPU.hh"
@@ -109,6 +112,9 @@ class CPU : public BaseCPU
 
     BaseMMU *mmu;
     using LSQRequest = LSQ::LSQRequest;
+
+    using PerThreadUnifiedRenameMap =
+        UnifiedRenameMap::PerThreadUnifiedRenameMap;
 
     /** Overall CPU status. */
     Status _status;
@@ -280,6 +286,13 @@ class CPU : public BaseCPU
     /** Get the current instruction sequence number, and increment it. */
     InstSeqNum getAndIncrementInstSeq() { return globalSeqNum++; }
 
+    /** Get the current fetch target sequence number, and increment it. */
+    InstSeqNum
+    getAndIncrementFTSeq()
+    {
+        return globalFTSeqNum++;
+    }
+
     /** Traps to handle given fault. */
     void trap(const Fault &fault, ThreadID tid, const StaticInstPtr &inst);
 
@@ -310,12 +323,12 @@ class CPU : public BaseCPU
      */
     void setMiscReg(int misc_reg, RegVal val, ThreadID tid);
 
-    RegVal getReg(PhysRegIdPtr phys_reg);
-    void getReg(PhysRegIdPtr phys_reg, void *val);
-    void *getWritableReg(PhysRegIdPtr phys_reg);
+    RegVal getReg(PhysRegIdPtr phys_reg, ThreadID tid);
+    void getReg(PhysRegIdPtr phys_reg, void *val, ThreadID tid);
+    void *getWritableReg(PhysRegIdPtr phys_reg, ThreadID tid);
 
-    void setReg(PhysRegIdPtr phys_reg, RegVal val);
-    void setReg(PhysRegIdPtr phys_reg, const void *val);
+    void setReg(PhysRegIdPtr phys_reg, RegVal val, ThreadID tid);
+    void setReg(PhysRegIdPtr phys_reg, const void *val, ThreadID tid);
 
     /** Architectural register accessors.  Looks up in the commit
      * rename table to obtain the true physical index of the
@@ -385,7 +398,7 @@ class CPU : public BaseCPU
      */
     std::queue<ListIt> removeList;
 
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     /** Debug structure to keep track of the sequence numbers still in
      * flight.
      */
@@ -398,6 +411,12 @@ class CPU : public BaseCPU
     bool removeInstsThisCycle;
 
   protected:
+    /** The branch and PC address calculation stage. */
+    BAC bac;
+
+    /** The Fetch taget queue. */
+    FTQ ftq;
+
     /** The fetch stage. */
     Fetch fetch;
 
@@ -420,10 +439,10 @@ class CPU : public BaseCPU
     UnifiedFreeList freeList;
 
     /** The rename map. */
-    UnifiedRenameMap renameMap[MaxThreads];
+    PerThreadUnifiedRenameMap renameMap;
 
     /** The commit rename map. */
-    UnifiedRenameMap commitRenameMap[MaxThreads];
+    PerThreadUnifiedRenameMap commitRenameMap;
 
     /** The re-order buffer. */
     ROB rob;
@@ -450,6 +469,7 @@ class CPU : public BaseCPU
      */
     enum StageIdx
     {
+        BACIdx,
         FetchIdx,
         DecodeIdx,
         RenameIdx,
@@ -506,6 +526,14 @@ class CPU : public BaseCPU
     /** Gets a free thread id. Use if thread ids change across system. */
     ThreadID getFreeTid();
 
+    /**
+     * Get whether a thread is in user mode.
+     *
+     * @param tid The thread id
+     * @return true if the thread is in user mode, false otherwise
+     */
+    bool inUserMode(ThreadID tid);
+
   public:
     /** Returns a pointer to a thread context. */
     gem5::ThreadContext *
@@ -515,7 +543,10 @@ class CPU : public BaseCPU
     }
 
     /** The global sequence number counter. */
-    InstSeqNum globalSeqNum;//[MaxThreads];
+    InstSeqNum globalSeqNum;
+
+    /** The global FT sequence number counter. */
+    FTSeqNum globalFTSeqNum;
 
     /** Pointer to the checker, which can dynamically verify
      * instruction results at run time.  This can be set to NULL if it
@@ -581,38 +612,6 @@ class CPU : public BaseCPU
         /** Stat for total number of cycles the CPU spends descheduled due to a
          * quiesce operation or waiting for an interrupt. */
         statistics::Scalar quiesceCycles;
-        /** Stat for the number of committed instructions per thread. */
-        statistics::Vector committedInsts;
-        /** Stat for the number of committed ops (including micro ops) per
-         *  thread. */
-        statistics::Vector committedOps;
-        /** Stat for the CPI per thread. */
-        statistics::Formula cpi;
-        /** Stat for the total CPI. */
-        statistics::Formula totalCpi;
-        /** Stat for the IPC per thread. */
-        statistics::Formula ipc;
-        /** Stat for the total IPC. */
-        statistics::Formula totalIpc;
-
-        //number of integer register file accesses
-        statistics::Scalar intRegfileReads;
-        statistics::Scalar intRegfileWrites;
-        //number of float register file accesses
-        statistics::Scalar fpRegfileReads;
-        statistics::Scalar fpRegfileWrites;
-        //number of vector register file accesses
-        mutable statistics::Scalar vecRegfileReads;
-        statistics::Scalar vecRegfileWrites;
-        //number of predicate register file accesses
-        mutable statistics::Scalar vecPredRegfileReads;
-        statistics::Scalar vecPredRegfileWrites;
-        //number of CC register file accesses
-        statistics::Scalar ccRegfileReads;
-        statistics::Scalar ccRegfileWrites;
-        //number of misc
-        statistics::Scalar miscRegfileReads;
-        statistics::Scalar miscRegfileWrites;
     } cpuStats;
 
   public:

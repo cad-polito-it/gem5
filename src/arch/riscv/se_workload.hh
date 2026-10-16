@@ -60,18 +60,17 @@ class SEWorkload : public gem5::SEWorkload
 
     loader::Arch getArch() const override { return loader::Riscv64; }
 
-    //FIXME RISCV needs to handle 64 bit arguments in its 32 bit ISA.
-    using SyscallABI = RegABI64;
+    using SyscallABI64 = RegABI64;
+    using SyscallABI32 = RegABI32;
 };
 
 } // namespace RiscvISA
 
-GEM5_DEPRECATED_NAMESPACE(GuestABI, guest_abi);
 namespace guest_abi
 {
 
 template <>
-struct Result<RiscvISA::SEWorkload::SyscallABI, SyscallReturn>
+struct Result<RiscvISA::SEWorkload::SyscallABI64, SyscallReturn>
 {
     static void
     store(ThreadContext *tc, const SyscallReturn &ret)
@@ -84,6 +83,26 @@ struct Result<RiscvISA::SEWorkload::SyscallABI, SyscallReturn>
             // got an error, return details
             tc->setReg(RiscvISA::ReturnValueReg, ret.encodedValue());
             tc->setFwdReg(RiscvISA::ReturnValueReg, ret.encodedValue());
+        }
+    }
+};
+
+template <>
+struct Result<RiscvISA::SEWorkload::SyscallABI32, SyscallReturn>
+{
+    static void
+    store(ThreadContext *tc, const SyscallReturn &ret)
+    {
+        if (ret.successful()) {
+            // no error
+            tc->setReg(RiscvISA::ReturnValueReg, sext<32>(ret.returnValue()));
+            tc->setFwdReg(RiscvISA::ReturnValueReg,
+                          sext<32>(ret.returnValue()));
+        } else {
+            // got an error, return details
+            tc->setReg(RiscvISA::ReturnValueReg, sext<32>(ret.encodedValue()));
+            tc->setFwdReg(RiscvISA::ReturnValueReg,
+                          sext<32>(ret.encodedValue()));
         }
     }
 };

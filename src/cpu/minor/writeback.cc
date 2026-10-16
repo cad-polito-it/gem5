@@ -58,7 +58,6 @@
 namespace gem5
 {
 
-    GEM5_DEPRECATED_NAMESPACE(Minor, minor);
     namespace minor
     {
 
@@ -179,8 +178,10 @@ namespace gem5
         Writeback::doInstCommitAccounting(MinorDynInstPtr inst)
         {
             assert(!inst->isFault());
-
-            MinorThread *thread = cpu.threads[inst->id.threadId];
+            bool is_nop = inst->staticInst->isNop();
+            const ThreadID tid = inst->id.threadId;
+            MinorThread *thread = cpu.threads[tid];
+            const bool in_user_mode = thread->getIsaPtr()->inUserMode();
 
             /* Increment the many and various inst and op counts in the
              *  thread and system */
@@ -188,52 +189,77 @@ namespace gem5
             {
                 thread->numInst++;
                 thread->threadStats.numInsts++;
-                cpu.stats.numInsts++;
+                cpu.commitStats[tid]->numInsts++;
+                cpu.executeStats[tid]->numInsts++;
+                cpu.baseStats.numInsts++;
+                if (in_user_mode)
+                {
+                    cpu.commitStats[tid]->numUserInsts++;
+                }
+
+                if (!is_nop)
+                {
+                    cpu.commitStats[tid]->numInstsNotNOP++;
+                }
 
                 /* Act on events related to instruction counts */
                 thread->comInstEventQueue.serviceEvents(thread->numInst);
             }
+
             thread->numOp++;
             thread->threadStats.numOps++;
-            cpu.stats.numOps++;
-            cpu.stats.committedInstType[inst->id.threadId]
-                                       [inst->staticInst->opClass()]++;
+            if (!is_nop)
+            {
+                cpu.commitStats[tid]->numOpsNotNOP++;
+            }
 
-            /** Add a count for every control instruction */
+            if (inst->staticInst->isMemRef())
+            {
+                cpu.executeStats[tid]->numMemRefs++;
+                cpu.commitStats[tid]->numMemRefs++;
+                thread->threadStats.numMemRefs++;
+            }
+            if (inst->staticInst->isLoad())
+            {
+                cpu.executeStats[tid]->numLoadInsts++;
+                cpu.commitStats[tid]->numLoadInsts++;
+            }
+            if (inst->staticInst->isStore() || inst->staticInst->isAtomic())
+            {
+                cpu.commitStats[tid]->numStoreInsts++;
+            }
+            if (inst->staticInst->isInteger())
+            {
+                cpu.commitStats[tid]->numIntInsts++;
+            }
+            if (inst->staticInst->isFloating())
+            {
+                cpu.commitStats[tid]->numFpInsts++;
+            }
+            if (inst->staticInst->isVector())
+            {
+                cpu.commitStats[tid]->numVecInsts++;
+            }
             if (inst->staticInst->isControl())
             {
-                if (inst->staticInst->isReturn())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsReturn]++;
-                }
-                if (inst->staticInst->isCall())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsCall]++;
-                }
-                if (inst->staticInst->isDirectCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsDirectControl]++;
-                }
-                if (inst->staticInst->isIndirectCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsIndirectControl]++;
-                }
-                if (inst->staticInst->isCondCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsCondControl]++;
-                }
-                if (inst->staticInst->isUncondCtrl())
-                {
-                    cpu.stats.committedControl[inst->id.threadId]
-                                              [gem5::StaticInstFlags::Flags::IsUncondControl]++;
-                }
-                cpu.stats.committedControl[inst->id.threadId]
-                                          [gem5::StaticInstFlags::Flags::IsControl]++;
+                cpu.executeStats[tid]->numBranches++;
+            }
+            if (inst->staticInst->isCall() || inst->staticInst->isReturn())
+            {
+                cpu.commitStats[tid]->numCallsReturns++;
+            }
+            if (inst->staticInst->isCall())
+            {
+                cpu.commitStats[tid]->functionCalls++;
+            }
+
+            cpu.commitStats[tid]->numOps++;
+            cpu.commitStats[tid]
+                ->committedInstType[inst->staticInst->opClass()]++;
+            cpu.commitStats[tid]->updateComCtrlStats(inst->staticInst);
+            if (in_user_mode)
+            {
+                cpu.commitStats[tid]->numUserOps++;
             }
 
             /* Set the CP SeqNum to the numOps commit number */
@@ -459,7 +485,7 @@ namespace gem5
                             *inst, wb_info.streamSeqNum);
 
                     if (fault == NoFault)
-                        cpu.stats.numDiscardedOps++;
+                        cpu.executeStats[inst->id.threadId]->numDiscardedOps++;
                 }
 
                 if (completed_inst)

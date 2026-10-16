@@ -42,11 +42,14 @@
 #ifndef __CPU_BASE_HH__
 #define __CPU_BASE_HH__
 
+#include <memory>
 #include <vector>
 
 #include "arch/generic/interrupts.hh"
+#include "arch/generic/mmu.hh"
 #include "base/statistics.hh"
 #include "debug/Mwait.hh"
+#include "dev/intpin.hh"
 #include "mem/htm.hh"
 #include "mem/port_proxy.hh"
 #include "sim/clocked_object.hh"
@@ -55,7 +58,7 @@
 #include "sim/insttracer.hh"
 #include "sim/probe/pmu.hh"
 #include "sim/probe/probe.hh"
-#include "sim/system.hh"
+#include "sim/signal.hh"
 
 namespace gem5
 {
@@ -64,6 +67,7 @@ class BaseCPU;
 struct BaseCPUParams;
 class CheckerCPU;
 class ThreadContext;
+class System;
 
 struct AddressMonitor
 {
@@ -141,7 +145,7 @@ class BaseCPU : public ClockedObject
     bool _switchedOut;
 
     /** Cache the cache line size that we get from the system */
-    const unsigned int _cacheLineSize;
+    const Addr _cacheLineSize;
 
     /** Global CPU statistics that are merged into the Root object. */
     struct GlobalStats : public statistics::Group
@@ -153,6 +157,30 @@ class BaseCPU : public ClockedObject
 
         statistics::Formula hostInstRate;
         statistics::Formula hostOpRate;
+
+        Counter previousInsts = 0;
+        Counter previousOps = 0;
+
+        static Counter
+        numSimulatedInsts()
+        {
+            return totalNumSimulatedInsts() - (globalStats->previousInsts);
+        }
+
+        static Counter
+        numSimulatedOps()
+        {
+            return totalNumSimulatedOps() - (globalStats->previousOps);
+        }
+
+        void
+        resetStats() override
+        {
+            previousInsts = totalNumSimulatedInsts();
+            previousOps = totalNumSimulatedOps();
+
+            statistics::Group::resetStats();
+        }
     };
 
     /**
@@ -160,6 +188,8 @@ class BaseCPU : public ClockedObject
      * constructed from regStats since we merge it into the root
      * group. */
     static std::unique_ptr<GlobalStats> globalStats;
+
+    SignalSinkPort<bool> modelResetPort;
 
   public:
 
@@ -255,6 +285,8 @@ class BaseCPU : public ClockedObject
   protected:
     std::vector<ThreadContext *> threadContexts;
 
+    std::vector<std::unique_ptr<IntSourcePin<BaseCPU>>> cpuIdlePins;
+
     trace::InstTracer * tracer;
 
   public:
@@ -291,11 +323,7 @@ class BaseCPU : public ClockedObject
     }
 
     /// Convert ContextID to threadID
-    ThreadID
-    contextToThread(ContextID cid)
-    {
-        return static_cast<ThreadID>(cid - threadContexts[0]->contextId());
-    }
+    ThreadID contextToThread(ContextID cid);
 
   public:
     PARAMS(BaseCPU);
@@ -338,6 +366,19 @@ class BaseCPU : public ClockedObject
     virtual void takeOverFrom(BaseCPU *cpu);
 
     /**
+     * Set the reset of the CPU to be either asserted or deasserted.
+     *
+     * When asserted, the CPU should be stopped and waiting. When deasserted,
+     * the CPU should start running again, unless some other condition would
+     * also prevent it. At the point the reset is deasserted, it should be
+     * reinitialized as defined by the ISA it's running and any other relevant
+     * part of its configuration (reset address, etc).
+     *
+     * @param state The new state of the reset signal to this CPU.
+     */
+    virtual void setReset(bool state);
+
+    /**
      * Flush all TLBs in the CPU.
      *
      * This method is mainly used to flush stale translations when
@@ -377,7 +418,7 @@ class BaseCPU : public ClockedObject
     /**
      * Get the cache line size of the system.
      */
-    inline unsigned int cacheLineSize() const { return _cacheLineSize; }
+    inline Addr cacheLineSize() const { return _cacheLineSize; }
 
     /**
      * Serialize this object to the given output stream.
@@ -588,8 +629,43 @@ class BaseCPU : public ClockedObject
     }
 
     static int numSimulatedCPUs() { return cpuList.size(); }
+
+    /**
+     * Get access to the global CPU list for switchable CPU synchronization.
+     * @return Reference to the static CPU list
+     */
+    static const std::vector<BaseCPU *> &
+    getCpuList()
+    {
+        return cpuList;
+    }
+
+    /**
+     * Get the number of thread contexts for this CPU.
+     * @return Number of thread contexts
+     */
+    size_t
+    numThreadContexts() const
+    {
+        return threadContexts.size();
+    }
+
+    /**
+     * Get a thread context by index for switchable CPU synchronization.
+     * @param tid Thread ID to retrieve
+     * @return Pointer to thread context or nullptr if index is invalid
+     */
+    ThreadContext *
+    getThreadContext(ThreadID tid) const
+    {
+        if (tid < threadContexts.size()) {
+            return threadContexts[tid];
+        }
+        return nullptr;
+    }
+
     static Counter
-    numSimulatedInsts()
+    totalNumSimulatedInsts()
     {
         Counter total = 0;
 
@@ -601,7 +677,7 @@ class BaseCPU : public ClockedObject
     }
 
     static Counter
-    numSimulatedOps()
+    totalNumSimulatedOps()
     {
         Counter total = 0;
 
@@ -616,8 +692,14 @@ class BaseCPU : public ClockedObject
     struct BaseCPUStats : public statistics::Group
     {
         BaseCPUStats(statistics::Group *parent);
+        // Number of CPU insts and ops committed at CPU core level
+        statistics::Scalar numInsts;
+        statistics::Scalar numOps;
         // Number of CPU cycles simulated
         statistics::Scalar numCycles;
+        /* CPI/IPC for total cycle counts and macro insts */
+        statistics::Formula cpi;
+        statistics::Formula ipc;
         statistics::Scalar numWorkItemsStarted;
         statistics::Scalar numWorkItemsCompleted;
     } baseStats;
@@ -660,6 +742,157 @@ class BaseCPU : public ClockedObject
     const Cycles pwrGatingLatency;
     const bool powerGatingOnIdle;
     EventFunctionWrapper enterPwrGatingEvent;
+
+
+  public:
+    struct FetchCPUStats : public statistics::Group
+    {
+        FetchCPUStats(statistics::Group *parent, int thread_id);
+
+        /* Total number of instructions fetched */
+        statistics::Scalar numInsts;
+
+        /* Total number of operations fetched */
+        statistics::Scalar numOps;
+
+        /* Number of instruction fetched per cycle. */
+        statistics::Formula fetchRate;
+
+        /* Total number of branches fetched */
+        statistics::Scalar numBranches;
+
+        /* Number of branch fetches per cycle. */
+        statistics::Formula branchRate;
+
+        /* Number of cycles stalled due to an icache miss */
+        statistics::Scalar icacheStallCycles;
+
+        /* Number of times fetch was asked to suspend by Execute */
+        statistics::Scalar numFetchSuspends;
+
+    };
+
+    struct ExecuteCPUStats: public statistics::Group
+    {
+        ExecuteCPUStats(statistics::Group *parent, int thread_id);
+
+        /* Stat for total number of executed instructions */
+        statistics::Scalar numInsts;
+        /* Number of executed nops */
+        statistics::Scalar numNop;
+        /* Number of executed branches */
+        statistics::Scalar numBranches;
+        /* Stat for total number of executed load instructions */
+        statistics::Scalar numLoadInsts;
+        /* Number of executed store instructions */
+        statistics::Formula numStoreInsts;
+        /* Number of instructions executed per cycle */
+        statistics::Formula instRate;
+
+        /* Number of cycles stalled for D-cache responses */
+        statistics::Scalar dcacheStallCycles;
+
+        /* Number of condition code register file accesses */
+        statistics::Scalar numCCRegReads;
+        statistics::Scalar numCCRegWrites;
+
+        /* number of float alu accesses */
+        statistics::Scalar numFpAluAccesses;
+
+        /* Number of float register file accesses */
+        statistics::Scalar numFpRegReads;
+        statistics::Scalar numFpRegWrites;
+
+        /* Number of integer alu accesses */
+        statistics::Scalar numIntAluAccesses;
+
+        /* Number of integer register file accesses */
+        statistics::Scalar numIntRegReads;
+        statistics::Scalar numIntRegWrites;
+
+        /* number of simulated memory references */
+        statistics::Scalar numMemRefs;
+
+        /* Number of misc register file accesses */
+        statistics::Scalar numMiscRegReads;
+        statistics::Scalar numMiscRegWrites;
+
+        /* Number of vector alu accesses */
+        statistics::Scalar numVecAluAccesses;
+
+        /* Number of predicate register file accesses */
+        mutable statistics::Scalar numVecPredRegReads;
+        statistics::Scalar numVecPredRegWrites;
+
+        /* Number of vector register file accesses */
+        mutable statistics::Scalar numVecRegReads;
+        statistics::Scalar numVecRegWrites;
+
+        /* Number of ops discarded before committing */
+        statistics::Scalar numDiscardedOps;
+    };
+
+    struct CommitCPUStats: public statistics::Group
+    {
+        CommitCPUStats(statistics::Group *parent, int thread_id);
+
+        /* Number of simulated instructions committed */
+        statistics::Scalar numInsts;
+        statistics::Scalar numOps;
+
+        /* Number of instructions committed that are not NOP or prefetches */
+        statistics::Scalar numInstsNotNOP;
+        statistics::Scalar numOpsNotNOP;
+
+        /* Number of instructions committed in user mode */
+        statistics::Scalar numUserInsts;
+        statistics::Scalar numUserOps;
+
+        /* Ratio of instructions committed in user mode */
+        statistics::Formula ratioUserInsts;
+        statistics::Formula ratioUserOps;
+
+        /* CPI/IPC for total cycle counts and macro insts */
+        statistics::Formula cpi;
+        statistics::Formula ipc;
+
+        /* Number of committed memory references. */
+        statistics::Scalar numMemRefs;
+
+        /* Number of float instructions */
+        statistics::Scalar numFpInsts;
+
+        /* Number of int instructions */
+        statistics::Scalar numIntInsts;
+
+        /* number of load instructions */
+        statistics::Scalar numLoadInsts;
+
+        /* Number of store instructions */
+        statistics::Scalar numStoreInsts;
+
+        /* Number of vector instructions */
+        statistics::Scalar numVecInsts;
+
+        /* Number of instructions committed by type (OpClass) */
+        statistics::Vector committedInstType;
+
+        /* number of control instructions committed by control inst type */
+        statistics::Vector committedControl;
+
+        /* number of function calls committed */
+        statistics::Scalar functionCalls;
+
+        /* Number of function calls and returns committed */
+        statistics::Scalar numCallsReturns;
+
+        void updateComCtrlStats(const StaticInstPtr staticInst);
+
+    };
+
+    std::vector<std::unique_ptr<FetchCPUStats>> fetchStats;
+    std::vector<std::unique_ptr<ExecuteCPUStats>> executeStats;
+    std::vector<std::unique_ptr<CommitCPUStats>> commitStats;
 };
 
 } // namespace gem5

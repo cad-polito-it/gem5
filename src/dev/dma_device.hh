@@ -42,6 +42,7 @@
 #define __DEV_DMA_DEVICE_HH__
 
 #include <deque>
+#include <optional>
 #include <memory>
 
 #include "base/addr_range_map.hh"
@@ -85,6 +86,12 @@ class DmaPort : public RequestPort, public Drainable
          * complete. */
         Event *completionEvent;
 
+        /** Event to call on the device when this transaction is aborted. */
+        Event *abortEvent;
+
+        /** Whether this request was aborted. */
+        bool aborted = false;
+
         /** Total number of bytes that this transaction involves. */
         const Addr totBytes;
 
@@ -107,16 +114,17 @@ class DmaPort : public RequestPort, public Drainable
         const RequestorID id;
 
         /** Stream IDs. */
-        const uint32_t sid;
-        const uint32_t ssid;
+        const std::optional<uint32_t> sid;
+        const std::optional<uint32_t> ssid;
 
         /** Command for the request. */
         const Packet::Command cmd;
 
         DmaReqState(Packet::Command _cmd, Addr addr, Addr chunk_sz, Addr tb,
                     uint8_t *_data, Request::Flags _flags, RequestorID _id,
-                    uint32_t _sid, uint32_t _ssid, Event *ce, Tick _delay)
-            : completionEvent(ce), totBytes(tb), delay(_delay),
+                    std::optional<uint32_t> _sid, std::optional<uint32_t> _ssid,
+                    Event *ce, Tick _delay, Event *ae=nullptr)
+            : completionEvent(ce), abortEvent(ae), totBytes(tb), delay(_delay),
               gen(addr, tb, chunk_sz), data(_data), flags(_flags), id(_id),
               sid(_sid), ssid(_ssid), cmd(_cmd)
         {}
@@ -168,14 +176,19 @@ class DmaPort : public RequestPort, public Drainable
 
     /** The packet (if any) waiting for a retry to send. */
     PacketPtr inRetry = nullptr;
+    /**
+     * Whether the other side expects us to wait for a retry. We may have
+     * decided not to actually send the packet by the time we get the retry.
+     */
+    bool retryPending = false;
 
     /** Default streamId */
-    const uint32_t defaultSid;
+    const std::optional<uint32_t> defaultSid;
 
     /** Default substreamId */
-    const uint32_t defaultSSid;
+    const std::optional<uint32_t> defaultSSid;
 
-    const int cacheLineSize;
+    const Addr cacheLineSize;
 
   protected:
 
@@ -184,7 +197,8 @@ class DmaPort : public RequestPort, public Drainable
 
   public:
 
-    DmaPort(ClockedObject *dev, System *s, uint32_t sid=0, uint32_t ssid=0);
+    DmaPort(ClockedObject *dev, System *s, std::optional<uint32_t> sid=0,
+            std::optional<uint32_t> ssid=0);
 
     void
     dmaAction(Packet::Command cmd, Addr addr, int size, Event *event,
@@ -192,8 +206,11 @@ class DmaPort : public RequestPort, public Drainable
 
     void
     dmaAction(Packet::Command cmd, Addr addr, int size, Event *event,
-              uint8_t *data, uint32_t sid, uint32_t ssid, Tick delay,
-              Request::Flags flag=0);
+              uint8_t *data, std::optional<uint32_t> sid,
+              std::optional<uint32_t> ssid, Tick delay, Request::Flags flag=0);
+
+    // Abort and remove any pending DMA transmissions.
+    void abortPending();
 
     bool dmaPending() const { return pendingCount > 0; }
 
@@ -212,7 +229,8 @@ class DmaDevice : public PioDevice
 
     void
     dmaWrite(Addr addr, int size, Event *event, uint8_t *data,
-             uint32_t sid, uint32_t ssid, Tick delay=0)
+             std::optional<uint32_t> sid, std::optional<uint32_t> ssid,
+             Tick delay=0)
     {
         dmaPort.dmaAction(MemCmd::WriteReq, addr, size, event, data,
                           sid, ssid, delay);
@@ -226,7 +244,8 @@ class DmaDevice : public PioDevice
 
     void
     dmaRead(Addr addr, int size, Event *event, uint8_t *data,
-            uint32_t sid, uint32_t ssid, Tick delay=0)
+            std::optional<uint32_t> sid, std::optional<uint32_t> ssid,
+            Tick delay=0)
     {
         dmaPort.dmaAction(MemCmd::ReadReq, addr, size, event, data,
                           sid, ssid, delay);
@@ -242,7 +261,7 @@ class DmaDevice : public PioDevice
 
     void init() override;
 
-    unsigned int cacheBlockSize() const { return sys->cacheLineSize(); }
+    Addr cacheBlockSize() const { return sys->cacheLineSize(); }
 
     Port &getPort(const std::string &if_name,
                   PortID idx=InvalidPortID) override;
@@ -511,7 +530,7 @@ class DmaReadFifo : public Drainable, public Serializable
 
     DmaPort &port;
 
-    const int cacheLineSize;
+    const Addr cacheLineSize;
 
   private:
     class DmaDoneEvent : public Event

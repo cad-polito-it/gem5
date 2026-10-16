@@ -34,6 +34,7 @@
 
 #include <vector>
 
+#include "arch/amdgpu/vega/page_walk_cache.hh"
 #include "arch/amdgpu/vega/pagetable.hh"
 #include "arch/amdgpu/vega/tlb.hh"
 #include "base/types.hh"
@@ -54,12 +55,15 @@ namespace VegaISA
 class Walker : public ClockedObject
 {
   protected:
+
+    PageWalkCache pwc;
+
     // Port for accessing memory
     class WalkerPort : public RequestPort
     {
       public:
         WalkerPort(const std::string &_name, Walker * _walker) :
-            RequestPort(_name, _walker), walker(_walker)
+            RequestPort(_name), walker(_walker)
         {}
 
       protected:
@@ -99,11 +103,13 @@ class Walker : public ClockedObject
         bool started;
         bool timing;
         PacketPtr tlbPkt;
+        int blockFragmentSize;
 
       public:
         WalkerState(Walker *_walker, PacketPtr pkt, bool is_functional = false)
             : walker(_walker), state(Ready), nextState(Ready), dataSize(8),
-              enableNX(true), retrying(false), started(false), tlbPkt(pkt)
+              enableNX(true), retrying(false), started(false), tlbPkt(pkt),
+              blockFragmentSize(0)
         {
             DPRINTF(GPUPTWalker, "Walker::WalkerState %p %p %d\n",
                     this, walker, state);
@@ -162,7 +168,10 @@ class Walker : public ClockedObject
     void setDevRequestor(RequestorID mid) { deviceRequestorId = mid; }
     RequestorID getDevRequestor() const { return deviceRequestorId; }
 
+    void invalidatePWC();
+
   protected:
+    bool enable_pwc;
     // The TLB we're supposed to load.
     GpuTLB *tlb;
     RequestorID requestorId;
@@ -191,8 +200,12 @@ class Walker : public ClockedObject
 
     Walker(const VegaPagetableWalkerParams &p)
       : ClockedObject(p),
+        pwc(name()+".pwc", p.page_walk_cache_entries,
+            p.page_walk_cache_entries, p.pwc_replacement_policy,
+            p.pwc_indexing_policy),
         port(name() + ".port", this),
-        funcState(this, nullptr, true), tlb(nullptr),
+        funcState(this, nullptr, true),
+        enable_pwc(p.enable_pwc), tlb(nullptr),
         requestorId(p.system->getRequestorId(this)),
         deviceRequestorId(999), system(p.system)
     {

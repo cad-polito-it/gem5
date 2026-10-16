@@ -45,6 +45,7 @@
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "params/Plic.hh"
+#include "params/PlicBase.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -53,13 +54,22 @@ namespace gem5
 using namespace RiscvISA;
 
 Plic::Plic(const Params &params) :
-    BasicPioDevice(params, params.pio_size),
+    PlicBase(params),
     system(params.system),
     nSrc(params.n_src),
-    nContext(params.n_contexts),
+    outputLatency(params.output_latency),
     registers(params.name, pioAddr, this),
     update([this]{updateOutput();}, name() + ".update")
 {
+    fatal_if(params.hart_config != "" && params.n_contexts != 0,
+             "the hart_config and n_contexts can't be set simultaneously");
+
+    if (params.n_contexts != 0) {
+        initContextFromNContexts(params.n_contexts);
+    }
+    if (params.hart_config != "") {
+        initContextFromHartConfig(params.hart_config);
+    }
 }
 
 void
@@ -79,7 +89,7 @@ Plic::post(int src_id)
 
     // Update states
     pendingPriority[src_id] = registers.priority[src_id].get();
-    for (int i = 0; i < nContext; i++) {
+    for (int i = 0; i < contextConfigs.size(); i++) {
         bool enabled = bits(registers.enable[i][src_index].get(), src_offset);
         effPriority[i][src_id] = enabled ? pendingPriority[src_id] : 0;
     }
@@ -108,7 +118,7 @@ Plic::clear(int src_id)
 
     // Update states
     pendingPriority[src_id] = 0;
-    for (int i = 0; i < nContext; i++) {
+    for (int i = 0; i < contextConfigs.size(); i++) {
         effPriority[i][src_id] = 0;
     }
     DPRINTF(Plic,
@@ -173,20 +183,20 @@ Plic::init()
 
     // Setup internal states
     pendingPriority.resize(nSrc, 0x0);
-    for (int i = 0; i < nContext; i++) {
+    for (int i = 0; i < contextConfigs.size(); i++) {
         std::vector<uint32_t> context_priority(nSrc, 0x0);
         effPriority.push_back(context_priority);
     }
-    lastID.resize(nContext, 0x0);
+    lastID.resize(contextConfigs.size(), 0x0);
 
     // Setup outputs
     output = PlicOutput{
-        std::vector<uint32_t>(nContext, 0x0),
-        std::vector<uint32_t>(nContext, 0x0)};
+        std::vector<uint32_t>(contextConfigs.size(), 0x0),
+        std::vector<uint32_t>(contextConfigs.size(), 0x0)};
 
     DPRINTF(Plic,
         "Device init - %d contexts, %d sources, %d pending registers\n",
-        nContext, nSrc, nSrc32);
+        contextConfigs.size(), nSrc, nSrc32);
 
     BasicPioDevice::init();
 }
@@ -203,15 +213,15 @@ Plic::PlicRegisters::init()
         - plic->nSrc32 * 4;
     reserved.emplace_back("reserved1", reserve1_size);
     const size_t reserve2_size = thresholdStart - enableStart
-        - plic->nSrc32 * plic->nContext * enablePadding;
+        - plic->contextConfigs.size() * enablePadding;
     reserved.emplace_back("reserved2", reserve2_size);
     const size_t reserve3_size = plic->pioSize - thresholdStart
-        - plic->nContext * thresholdPadding;
+        - plic->contextConfigs.size() * thresholdPadding;
     reserved.emplace_back("reserved3", reserve3_size);
 
     // Sanity check
     assert(plic->pioSize >= thresholdStart
-        + plic->nContext * thresholdPadding);
+        + plic->contextConfigs.size() * thresholdPadding);
     assert((int) plic->pioSize <= maxBankSize);
 
     // Calculate hole sizes
@@ -227,7 +237,7 @@ Plic::PlicRegisters::init()
         pending.emplace_back(
             std::string("pending") + std::to_string(i), 0);
     }
-    for (int i = 0; i < plic->nContext; i++) {
+    for (int i = 0; i < plic->contextConfigs.size(); i++) {
 
         enable.push_back(std::vector<Register32>());
         for (int j = 0; j < plic->nSrc32; j++) {
@@ -263,7 +273,7 @@ Plic::PlicRegisters::init()
     addRegister(reserved[1]);
 
     // Enable
-    for (int i = 0; i < plic->nContext; i++) {
+    for (int i = 0; i < plic->contextConfigs.size(); i++) {
         for (int j = 0; j < plic->nSrc32; j++) {
             auto write_cb = std::bind(&Plic::writeEnable, plic, _1, _2, j, i);
             enable[i][j].writer(write_cb);
@@ -274,7 +284,7 @@ Plic::PlicRegisters::init()
     addRegister(reserved[2]);
 
     // Threshold and claim
-    for (int i = 0; i < plic->nContext; i++) {
+    for (int i = 0; i < plic->contextConfigs.size(); i++) {
         auto threshold_cb = std::bind(&Plic::writeThreshold, plic, _1, _2, i);
         threshold[i].writer(threshold_cb);
         auto read_cb = std::bind(&Plic::readClaim, plic, _1, i);
@@ -300,7 +310,7 @@ Plic::writePriority(Register32& reg, const uint32_t& data, const int src_id)
     // Update states
     bool pending = bits(registers.pending[src_index].get(), src_offset);
     pendingPriority[src_id] = pending ? reg.get() : 0;
-    for (int i = 0; i < nContext; i++) {
+    for (int i = 0; i < contextConfigs.size(); i++) {
         bool enabled = bits(
             registers.enable[i][src_index].get(), src_offset);
         effPriority[i][src_id] = enabled ? pendingPriority[src_id] : 0;
@@ -333,6 +343,8 @@ void
 Plic::writeThreshold(Register32& reg, const uint32_t& data,
     const int context_id)
 {
+    reg.update(data);
+
     DPRINTF(Plic,
         "Threshold updated - context: %d, val: %d\n",
         context_id, reg.get());
@@ -391,11 +403,11 @@ Plic::propagateOutput()
 {
     // Calculate new output
     PlicOutput new_output{
-        std::vector<uint32_t>(nContext, 0x0),
-        std::vector<uint32_t>(nContext, 0x0)};
+        std::vector<uint32_t>(contextConfigs.size(), 0x0),
+        std::vector<uint32_t>(contextConfigs.size(), 0x0)};
     uint32_t max_id;
     uint32_t max_priority;
-    for (int i = 0; i < nContext; i++) {
+    for (int i = 0; i < contextConfigs.size(); i++) {
         max_id = max_element(effPriority[i].begin(),
             effPriority[i].end()) - effPriority[i].begin();
         max_priority = effPriority[i][max_id];
@@ -404,7 +416,7 @@ Plic::propagateOutput()
     }
 
     // Add new output to outputQueue
-    Tick next_update = curTick() + cyclesToTicks(Cycles(3));
+    Tick next_update = clockEdge(Cycles(outputLatency));
     if (outputQueue.find(next_update) != outputQueue.end()) {
         outputQueue[next_update] = new_output;
     } else {
@@ -415,6 +427,39 @@ Plic::propagateOutput()
     if (!update.scheduled()) {
         DPRINTF(Plic, "Update scheduled - tick: %d\n", next_update);
         schedule(update, next_update);
+    }
+}
+
+void
+Plic::initContextFromNContexts(int n_contexts)
+{
+    contextConfigs.reserve(n_contexts);
+    for (uint32_t i = 0; i < (uint32_t)n_contexts; i += 2) {
+      contextConfigs.emplace_back((i >> 1), ExceptionCode::INT_EXT_MACHINE);
+      contextConfigs.emplace_back((i >> 1), ExceptionCode::INT_EXT_SUPER);
+    }
+}
+
+void
+Plic::initContextFromHartConfig(const std::string& hart_config)
+{
+    contextConfigs.reserve(hart_config.size());
+    uint32_t hart_id = 0;
+    for (char c: hart_config) {
+      switch (c) {
+        case ',':
+          hart_id++;
+          break;
+        case 'M':
+          contextConfigs.emplace_back(hart_id, ExceptionCode::INT_EXT_MACHINE);
+          break;
+        case 'S':
+          contextConfigs.emplace_back(hart_id, ExceptionCode::INT_EXT_SUPER);
+          break;
+        default:
+          fatal("hart_config should not contains the value: %c", c);
+          break;
+      }
     }
 }
 
@@ -440,10 +485,8 @@ void
 Plic::updateInt()
 {
     // Update xEIP lines
-    for (int i = 0; i < nContext; i++) {
-        int thread_id = i >> 1;
-        int int_id = (i & 1) ?
-            ExceptionCode::INT_EXT_SUPER : ExceptionCode::INT_EXT_MACHINE;
+    for (int i = 0; i < contextConfigs.size(); i++) {
+        auto [thread_id, int_id] = contextConfigs[i];
 
         auto tc = system->threads[thread_id];
         uint32_t max_id = output.maxID[i];

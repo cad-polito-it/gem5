@@ -31,6 +31,7 @@
 
 #include <set>
 
+#include "base/random.hh"
 #include "base/statistics.hh"
 #include "mem/port.hh"
 #include "params/GarnetSyntheticTraffic.hh"
@@ -84,7 +85,7 @@ class GarnetSyntheticTraffic : public ClockedObject
       public:
 
         CpuPort(const std::string &_name, GarnetSyntheticTraffic *_tester)
-            : RequestPort(_name, _tester), tester(_tester)
+            : RequestPort(_name), tester(_tester)
         { }
 
       protected:
@@ -134,6 +135,8 @@ class GarnetSyntheticTraffic : public ClockedObject
     const Cycles responseLimit;
 
     RequestorID requestorId;
+
+    Random::RandomPtr rng;
 
     void completeRequest(PacketPtr pkt);
 

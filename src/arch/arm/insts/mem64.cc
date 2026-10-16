@@ -51,8 +51,7 @@ std::string
 SysDC64::generateDisassembly(Addr pc, const loader::SymbolTable *symtab) const
 {
     std::stringstream ss;
-    printMnemonic(ss, "", false);
-    ccprintf(ss, ", ");
+    ss << "  " << mnemonic << ", ";
     printIntReg(ss, base);
     return ss.str();
 }
@@ -61,8 +60,8 @@ SysDC64::generateDisassembly(Addr pc, const loader::SymbolTable *symtab) const
 uint32_t
 SysDC64::iss() const
 {
-    const MiscRegNum64 &misc_reg = encodeAArch64SysReg(dest);
-    return _iss(misc_reg, base);
+    const auto misc_reg = encodeAArch64SysReg(dest);
+    return _iss(misc_reg.value(), base);
 }
 
 void
@@ -155,9 +154,9 @@ MemoryPostIndex64::generateDisassembly(
 {
     std::stringstream ss;
     startDisassembly(ss);
-    if (imm)
-        ccprintf(ss, "], #%d", imm);
     ccprintf(ss, "]");
+    if (imm)
+        ccprintf(ss, ", #%d", imm);
     return ss.str();
 }
 

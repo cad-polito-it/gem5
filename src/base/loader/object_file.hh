@@ -55,7 +55,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Loader, loader);
 namespace loader
 {
 
@@ -141,6 +140,7 @@ class ObjectFileFormat
 {
   protected:
     ObjectFileFormat();
+    virtual ~ObjectFileFormat() = default;
 
   public:
     ObjectFileFormat(const ObjectFileFormat &) = delete;

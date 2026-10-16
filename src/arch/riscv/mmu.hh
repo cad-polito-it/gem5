@@ -42,6 +42,7 @@
 #include "arch/riscv/isa.hh"
 #include "arch/riscv/page_size.hh"
 #include "arch/riscv/pma_checker.hh"
+#include "arch/riscv/pmp.hh"
 #include "arch/riscv/tlb.hh"
 
 #include "params/RiscvMMU.hh"
@@ -54,11 +55,27 @@ namespace RiscvISA {
 class MMU : public BaseMMU
 {
   public:
-    PMAChecker *pma;
+    BasePMAChecker *pma;
 
     MMU(const RiscvMMUParams &p)
       : BaseMMU(p), pma(p.pma_checker)
     {}
+
+    void
+    reset() override
+    {
+        // Reset PMP Cfg
+        getPMP()->pmpReset();
+    }
+
+    Addr
+    getValidAddr(Addr vaddr, ThreadContext *tc, Mode mode) override
+    {
+        if (mode == BaseMMU::Execute) {
+            return static_cast<TLB*>(itb)->getValidAddr(vaddr, tc, mode);
+        }
+        return static_cast<TLB*>(dtb)->getValidAddr(vaddr, tc, mode);
+    }
 
     TranslationGenPtr
     translateFunctional(Addr start, Addr size, ThreadContext *tc,
@@ -68,10 +85,11 @@ class MMU : public BaseMMU
                 PageBytes, start, size, tc, this, mode, flags));
     }
 
-    PrivilegeMode
-    getMemPriv(ThreadContext *tc, BaseMMU::Mode mode)
+    MemAccessInfo
+    getMemAccessInfo(ThreadContext *tc, BaseMMU::Mode mode)
     {
-        return static_cast<TLB*>(dtb)->getMemPriv(tc, mode);
+        return static_cast<TLB*>(dtb)->getMemAccessInfo(
+          tc, mode, (Request::ArchFlagsType)0);
     }
 
     Walker *
@@ -94,6 +112,23 @@ class MMU : public BaseMMU
     {
         return static_cast<TLB*>(dtb)->pmp;
     }
+
+    /*
+     * The usage of Memory Request Arch Flags for RISC-V
+     *  | 7 ------------- 3 | 2 ------ 0 |
+     *  |     Reserved      |  LDST Size |
+     *  | ------------------| -----------|
+     */
+    enum RiscvFlags
+    {
+        ByteAlign = 0,
+        HalfWordAlign = 1,
+        WordAlign = 2,
+        DoubleWordAlign = 3,
+        QuadWordAlign = 4,
+
+        AlignmentMask = 0x7,
+    };
 };
 
 } // namespace RiscvISA

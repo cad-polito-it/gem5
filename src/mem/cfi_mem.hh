@@ -41,6 +41,7 @@
 #ifndef __MEM_FLASH_MEM_HH__
 #define __MEM_FLASH_MEM_HH__
 
+#include "base/random.hh"
 #include "mem/abstract_mem.hh"
 #include "params/CfiMemory.hh"
 
@@ -248,6 +249,8 @@ class CfiMemory : public AbstractMemory
         Tick recvAtomicBackdoor(
                 PacketPtr pkt, MemBackdoorPtr &_backdoor) override;
         void recvFunctional(PacketPtr pkt) override;
+        void recvMemBackdoorReq(const MemBackdoorReq &req,
+                MemBackdoorPtr &_backdoor) override;
         bool recvTimingReq(PacketPtr pkt) override;
         void recvRespRetry() override;
         AddrRangeList getAddrRanges() const override;
@@ -345,6 +348,8 @@ class CfiMemory : public AbstractMemory
 
     uint8_t cfiQueryTable[61];
 
+    mutable Random::RandomPtr rng = Random::genRandom();
+
   public:
     CfiMemory(const CfiMemoryParams &p);
 
@@ -361,6 +366,8 @@ class CfiMemory : public AbstractMemory
     Tick recvAtomic(PacketPtr pkt);
     Tick recvAtomicBackdoor(PacketPtr pkt, MemBackdoorPtr &_backdoor);
     void recvFunctional(PacketPtr pkt);
+    void recvMemBackdoorReq(const MemBackdoorReq &req,
+            MemBackdoorPtr &_backdoor);
     bool recvTimingReq(PacketPtr pkt);
     void recvRespRetry();
 

@@ -33,9 +33,11 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from m5.objects.ClockDomain import SrcClockDomain
 from m5.params import *
-from m5.SimObject import SimObject
 from m5.proxy import *
+from m5.SimObject import SimObject
+
 
 # The handler in its current form is design to be centeralized, one per system
 # and manages all the source clock domains (SrcClockDomain) it is configured to

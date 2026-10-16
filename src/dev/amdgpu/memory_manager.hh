@@ -45,11 +45,11 @@ namespace gem5
 
 class AMDGPUMemoryManager : public ClockedObject
 {
-    class GPUMemPort : public MasterPort
+    class GPUMemPort : public RequestPort
     {
       public:
         GPUMemPort(const std::string &_name, AMDGPUMemoryManager &_gpuMemMgr)
-            : MasterPort(_name, &_gpuMemMgr), gpu_mem(_gpuMemMgr)
+            : RequestPort(_name), gpu_mem(_gpuMemMgr)
         {
         }
 
@@ -124,6 +124,8 @@ class AMDGPUMemoryManager : public ClockedObject
      * @return requestorID of this object.
      */
     RequestorID getRequestorID() const { return _requestorId; }
+
+    Addr getCacheLineSize() const { return cacheLineSize; }
 
     Port &
     getPort(const std::string &if_name, PortID idx) override

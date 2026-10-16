@@ -2,6 +2,7 @@
 # Copyright (c) 2014 Sven Karlsson
 # Copyright (c) 2016 RISC-V Foundation
 # Copyright (c) 2016 The University of Virginia
+# Copyright (c) 2024 University of Rostock
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,10 +28,40 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+from m5.citations import add_citation
 from m5.objects.BaseInterrupts import BaseInterrupts
+from m5.params import (
+    Param,
+    VectorIntSinkPin,
+    VectorParam,
+)
 
 
 class RiscvInterrupts(BaseInterrupts):
     type = "RiscvInterrupts"
     cxx_class = "gem5::RiscvISA::Interrupts"
     cxx_header = "arch/riscv/interrupts.hh"
+
+    local_interrupt_pins = VectorIntSinkPin("Pins for local interrupts")
+    local_interrupt_ids = VectorParam.Unsigned(
+        [], "list of local interrupt ids"
+    )
+    nmi_cause = Param.Int(0, "Non-maskable interrupt(NMI) cause")
+
+
+add_citation(
+    RiscvInterrupts,
+    r"""@INPROCEEDINGS{Hauser:2024:LocalRiscvInterrupts,
+  author    = {Hauser, Robert and
+               Steffen, Lukas and
+               Gr{\"u}tzmacher, Florian and
+               Haubelt, Christian},
+  booktitle = {MBMV 2024; 27. Workshop},
+  title     = {Analyzing Local RISC-V Interrupt Latencies
+               with Virtual Prototyping},
+  year      = {2024},
+  pages     = {7-14},
+  address   = {Kaiserslautern, Germany},
+  }
+    """,
+)

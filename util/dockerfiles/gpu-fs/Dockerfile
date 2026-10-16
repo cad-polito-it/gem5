@@ -1,4 +1,4 @@
-# Copyright (c) 2022 Advanced Micro Devices, Inc.
+# Copyright (c) 2024 Advanced Micro Devices, Inc.
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -27,29 +27,42 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-FROM ubuntu:20.04
+FROM ubuntu:24.04
+
+LABEL org.opencontainers.image.source=https://github.com/gem5/gem5
+LABEL org.opencontainers.image.description="An image used to build applications to be run with GPU full system. Applications targeting AMD's ROCm GPU framework can be built using this image (e.g., HIP, HSA, OpencL, etc.)."
+LABEL org.opencontainers.image.licenses=BSD-3-Clause
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt -y update && apt -y upgrade && \
     apt -y install build-essential git m4 scons zlib1g zlib1g-dev \
     libprotobuf-dev protobuf-compiler libprotoc-dev libgoogle-perftools-dev \
     python3-dev python-is-python3 doxygen libboost-all-dev \
-    libhdf5-serial-dev python3-pydot libpng-dev libelf-dev pkg-config
+    libhdf5-serial-dev python3-pydot libpng-dev libelf-dev pkg-config wget
 
-# Requirements for ROCm
-RUN apt -y install cmake mesa-common-dev libgflags-dev libgoogle-glog-dev
+# The follow were adapted from instructions at the URL below, accessed 4/12/24:
+# https://rocm.docs.amd.com/projects/install-on-linux/en/latest/how-to/
+#             native-install/ubuntu.html
 
-# Needed to get ROCm repo, build packages
-RUN apt -y install wget gnupg2 rpm
+# Make the directory if it doesn't exist yet.
+# This location is recommended by the distribution maintainers.
+RUN mkdir --parents --mode=0755 /etc/apt/keyrings
 
-# Get the radeon gpg key for apt repository
-RUN wget -q -O - https://repo.radeon.com/rocm/rocm.gpg.key | apt-key add -
+# Download the key, convert the signing-key to a full
+# keyring required by apt and store in the keyring directory
+RUN wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+    gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null
 
-# Modify apt sources to pull from ROCm 4.2 repository only
-RUN echo 'deb [arch=amd64] https://repo.radeon.com/rocm/apt/4.2/ ubuntu main' | tee /etc/apt/sources.list.d/rocm.list
+RUN echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/amdgpu/7.0/ubuntu noble main" \
+    | tee /etc/apt/sources.list.d/amdgpu.list
+RUN echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.0 noble main" \
+    | tee --append /etc/apt/sources.list.d/rocm.list
+# Note: Need to remove 'echo -e' in docker.
+RUN echo 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+    | tee /etc/apt/preferences.d/rocm-pin-600
 
-RUN apt-get update
-RUN apt -y install libnuma-dev
+RUN apt -y update
 
-# Install the ROCm-dkms source
-RUN apt -y install initramfs-tools
-RUN apt -y install rocm-dkms
+# This package should be the minimum needed to build and is significantly
+# smaller than the full `rocm` package.
+RUN apt -y install rocm-dev

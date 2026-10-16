@@ -26,13 +26,12 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.SimObject import SimObject
 from m5.params import *
+from m5.SimObject import SimObject
 from m5.util import fatal
 
 
 class Root(SimObject):
-
     _the_instance = None
 
     def __new__(cls, **kwargs):
@@ -59,6 +58,7 @@ class Root(SimObject):
     type = "Root"
     cxx_header = "sim/root.hh"
     cxx_class = "gem5::Root"
+    override_create = True
 
     # By default, root sim object and hence all other sim objects schedule
     # event on the eventq with index 0.

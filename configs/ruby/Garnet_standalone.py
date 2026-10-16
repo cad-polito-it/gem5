@@ -26,10 +26,15 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import m5
-from m5.objects import *
 from m5.defines import buildEnv
+from m5.objects import *
 from m5.util import addToPath
-from .Ruby import create_topology, create_directories
+
+from .Ruby import (
+    create_directories,
+    create_topology,
+)
+
 
 #
 # Declare caches used by the protocol
@@ -73,7 +78,11 @@ def create_system(
         # Only one cache exists for this protocol, so by default use the L1D
         # config parameters.
         #
-        cache = L1Cache(size=options.l1d_size, assoc=options.l1d_assoc)
+        cache = L1Cache(
+            size=options.l1d_size,
+            assoc=options.l1d_assoc,
+            block_size=f"{options.cacheline_size}B",
+        )
 
         #
         # Only one unified L1 cache exists.  Can cache instructions and data.

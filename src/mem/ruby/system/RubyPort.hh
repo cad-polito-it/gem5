@@ -67,11 +67,12 @@ class RubyPort : public ClockedObject
     class MemRequestPort : public QueuedRequestPort
     {
       private:
+        RubyPort& owner;
         ReqPacketQueue reqQueue;
         SnoopRespPacketQueue snoopRespQueue;
 
       public:
-        MemRequestPort(const std::string &_name, RubyPort *_port);
+        MemRequestPort(const std::string &_name, RubyPort& _port);
 
       protected:
         bool recvTimingResp(PacketPtr pkt);
@@ -81,14 +82,16 @@ class RubyPort : public ClockedObject
     class MemResponsePort : public QueuedResponsePort
     {
       private:
+        RubyPort& owner;
         RespPacketQueue queue;
         bool access_backing_store;
         bool no_retry_on_stall;
 
       public:
-        MemResponsePort(const std::string &_name, RubyPort *_port,
-                     bool _access_backing_store,
-                     PortID id, bool _no_retry_on_stall);
+        MemResponsePort(const std::string &_name,
+                        RubyPort& _port,
+                        bool _access_backing_store,
+                        PortID id, bool _no_retry_on_stall);
         void hitCallback(PacketPtr pkt);
         void evictionCallback(Addr address);
 
@@ -112,11 +115,12 @@ class RubyPort : public ClockedObject
     class PioRequestPort : public QueuedRequestPort
     {
       private:
+        RubyPort& owner;
         ReqPacketQueue reqQueue;
         SnoopRespPacketQueue snoopRespQueue;
 
       public:
-        PioRequestPort(const std::string &_name, RubyPort *_port);
+        PioRequestPort(const std::string &_name, RubyPort& _port);
 
       protected:
         bool recvTimingResp(PacketPtr pkt);
@@ -126,10 +130,11 @@ class RubyPort : public ClockedObject
     class PioResponsePort : public QueuedResponsePort
     {
       private:
+        RubyPort& owner;
         RespPacketQueue queue;
 
       public:
-        PioResponsePort(const std::string &_name, RubyPort *_port);
+        PioResponsePort(const std::string &_name, RubyPort& _port);
 
       protected:
         bool recvTimingReq(PacketPtr pkt);
@@ -175,6 +180,11 @@ class RubyPort : public ClockedObject
     bool isCPUSequencer() { return m_isCPUSequencer; }
 
     virtual int functionalWrite(Packet *func_pkt);
+
+    // Helper methods for commonly used functions called in common/address.hh
+    Addr getOffset(Addr addr) const;
+    Addr makeLineAddress(Addr addr) const;
+    std::string printAddress(Addr addr) const;
 
   protected:
     void trySendRetries();

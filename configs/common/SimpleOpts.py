@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015 Jason Power
 # All rights reserved.
 #
@@ -25,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" Options wrapper for simple gem5 configuration scripts
+"""Options wrapper for simple gem5 configuration scripts
 
 This module wraps the argparse class so that we can register options
 from each class instead of only from the configuration script.
@@ -35,11 +34,11 @@ from each class instead of only from the configuration script.
 # Module-level variable to track if we've called the parse_args function yet
 called_parse_args = False
 
-# For fatal
-import m5
-
 # import the argument parser
 from argparse import ArgumentParser
+
+# For fatal
+import m5
 
 # add the args we want to be able to control from the command line
 parser = ArgumentParser()

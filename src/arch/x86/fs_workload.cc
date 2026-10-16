@@ -43,9 +43,13 @@
 #include "arch/x86/bios/smbios.hh"
 #include "arch/x86/faults.hh"
 #include "base/loader/object_file.hh"
+#include "base/trace.hh"
+#include "cpu/pc_event.hh"
 #include "cpu/thread_context.hh"
 #include "debug/ACPI.hh"
+#include "kern/linux/events.hh"
 #include "params/X86FsWorkload.hh"
+#include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -58,7 +62,8 @@ FsWorkload::FsWorkload(const Params &p) : KernelWorkload(p),
     smbiosTable(p.smbios_table),
     mpFloatingPointer(p.intel_mp_pointer),
     mpConfigTable(p.intel_mp_table),
-    rsdp(p.acpi_description_table_pointer)
+    rsdp(p.acpi_description_table_pointer),
+    enable_osxsave(p.enable_osxsave)
 {}
 
 void
@@ -101,6 +106,53 @@ installSegDesc(ThreadContext *tc, int seg, SegDescriptor desc, bool longmode)
     tc->setMiscReg(misc_reg::segLimit(seg), desc.limit);
     tc->setMiscReg(misc_reg::segAttr(seg), (RegVal)attr);
 }
+
+void
+FsWorkload::startup()
+{
+    KernelWorkload::startup();
+    addExitOnKernelPanicEvent();
+    addExitOnKernelOopsEvent();
+}
+
+void
+FsWorkload::addExitOnKernelPanicEvent()
+{
+    const std::string dmesg_output = name() + ".dmesg";
+    if (params().exit_on_kernel_panic) {
+        // This was taken from the RISCV implementation. Some kernels may not
+        // have kernel symbols, causing `kernelSymtab` to be empty.
+        // In that case, addKernelFuncEvent tries to access the "panic" symbol
+        // in the symbol table but can't, so the event won't be added and the
+        // simulation will hang upon kernel panic.
+        kernelPanicPcEvent = addKernelFuncEvent<linux::PanicOrOopsEvent>(
+            "panic", "Kernel panic in simulated system.",
+            dmesg_output, params().on_panic
+        );
+        warn_if(!kernelPanicPcEvent, "Failed to find kernel symbol 'panic'");
+    }
+}
+
+void
+FsWorkload::addExitOnKernelOopsEvent()
+{
+    const std::string dmesg_output = name() + ".dmesg";
+    // This was taken from the RISCV implementation. Some kernels may not
+    // have kernel symbols, causing `kernelSymtab` to be empty.
+    // In that case, addKernelFuncEvent tries to access the "oops_exit" symbol
+    // in the symbol table but can't, so the event won't be added and the
+    // simulation will continue upon kernel oops.
+    if (params().exit_on_kernel_oops) {
+        kernelOopsPcEvent = addKernelFuncEvent<linux::PanicOrOopsEvent>(
+            "oops_exit", "Kernel oops in simulated system.",
+            dmesg_output, params().on_oops
+        );
+        warn_if(!kernelOopsPcEvent,
+                "Failed to find kernel symbol 'oops_exit'");
+    }
+
+}
+
 
 void
 FsWorkload::initState()
@@ -295,10 +347,16 @@ FsWorkload::initState()
     CR4 cr4 = tc->readMiscRegNoEffect(misc_reg::Cr4);
     // Turn on pae.
     cr4.pae = 1;
+    cr4.osxsave = enable_osxsave;
     tc->setMiscReg(misc_reg::Cr4, cr4);
 
     // Point to the page tables.
     tc->setMiscReg(misc_reg::Cr3, PageMapLevel4);
+
+    // Only used if cr4.osxsave is set
+    XCR0 xcr0 = tc->readMiscRegNoEffect(misc_reg::Xcr0);
+    xcr0.x87 = 1; // Must be 1 according to x86 specification
+    tc->setMiscReg(misc_reg::Xcr0, xcr0);
 
     Efer efer = tc->readMiscRegNoEffect(misc_reg::Efer);
     // Enable long mode.

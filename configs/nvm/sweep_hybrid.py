@@ -33,18 +33,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import math
 import argparse
+import math
 
 import m5
 from m5.objects import *
-from m5.util import addToPath
 from m5.stats import periodicStatDump
+from m5.util import addToPath
 
 addToPath("../")
 
-from common import ObjectList
-from common import MemConfig
+from common import (
+    MemConfig,
+    ObjectList,
+)
 
 # this script is helpful to sweep the efficiency of a specific memory
 # controller configuration, by varying the number of banks accessed,
@@ -125,8 +127,8 @@ system.clk_domain = SrcClockDomain(
 # the second, larger (1024) range for NVM
 # the NVM range starts directly after the DRAM range
 system.mem_ranges = [
-    AddrRange("128MB"),
-    AddrRange(Addr("128MB"), size="1024MB"),
+    AddrRange("128MiB"),
+    AddrRange(Addr("128MiB"), size="1024MiB"),
 ]
 
 # do not worry about reserving space for the backing store
@@ -141,7 +143,7 @@ MemConfig.config_mem(args, system)
 
 # the following assumes that we are using the native controller
 # with NVM and DRAM interfaces, check to be sure
-if not isinstance(system.mem_ctrls[0], m5.objects.HeteroMemCtrl):
+if not isinstance(system.mem_ctrls[0], m5.objects.MemCtrl):
     fatal("This script assumes the controller is a HeteroMemCtrl subclass")
 if not isinstance(system.mem_ctrls[0].dram, m5.objects.DRAMInterface):
     fatal("This script assumes the first memory is a DRAMInterface subclass")

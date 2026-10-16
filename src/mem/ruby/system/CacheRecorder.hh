@@ -50,7 +50,7 @@ namespace ruby
 {
 
 class Sequencer;
-
+class RubyPort;
 /*!
  * Class for recording cache contents. Note that the last element of the
  * class is an array of length zero. It is used for creating variable
@@ -73,17 +73,21 @@ class TraceRecord
 class CacheRecorder
 {
   public:
-    CacheRecorder();
-    ~CacheRecorder();
-
+    // Construction requires block size.
+    CacheRecorder() = delete;
     CacheRecorder(uint8_t* uncompressed_trace,
                   uint64_t uncompressed_trace_size,
-                  std::vector<Sequencer*>& SequencerMap,
-                  uint64_t block_size_bytes);
+                  std::vector<RubyPort*>& ruby_port_map,
+                  uint64_t trace_block_size_bytes,
+                  uint64_t system_block_size_bytes);
+    ~CacheRecorder();
+
     void addRecord(int cntrl, Addr data_addr, Addr pc_addr,
                    RubyRequestType type, Tick time, DataBlock& data);
 
     uint64_t aggregateRecords(uint8_t **data, uint64_t size);
+
+    uint64_t getNumRecords() const;
 
     /*!
      * Function for flushing the memory contents of the caches to the
@@ -112,7 +116,7 @@ class CacheRecorder
     std::vector<TraceRecord*> m_records;
     uint8_t* m_uncompressed_trace;
     uint64_t m_uncompressed_trace_size;
-    std::vector<Sequencer*> m_seq_map;
+    std::vector<RubyPort*> m_ruby_port_map;
     uint64_t m_bytes_read;
     uint64_t m_records_read;
     uint64_t m_records_flushed;

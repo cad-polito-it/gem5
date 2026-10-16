@@ -1,4 +1,4 @@
-# Copyright (c) 2009, 2012-2013, 2015-2022 ARM Limited
+# Copyright (c) 2009, 2012-2013, 2015-2025 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -33,15 +33,14 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.params import *
+from typing import Any
+
+from m5.objects.ArmSemihosting import ArmSemihosting
+from m5.objects.System import System
 from m5.options import *
+from m5.params import *
 from m5.SimObject import *
 from m5.util.fdthelper import *
-
-from m5.objects.System import System
-from m5.objects.ArmSemihosting import ArmSemihosting
-
-from typing import Any
 
 
 class SveVectorLength(UInt8):
@@ -49,8 +48,28 @@ class SveVectorLength(UInt8):
     max = 16
 
 
+class SmeVectorLength(UInt8):
+    min = 1
+    max = 16
+
+    def _check(self):
+        super()._check()
+
+        # SME needs to be a whole power of 2. We already know value is
+        # not zero. Hence:
+        if self.value & (self.value - 1) != 0:
+            raise TypeError(
+                "SME vector length is not a power of 2: %d" % self.value
+            )
+
+
 class ArmExtension(ScopedEnum):
     vals = [
+        "FEAT_AES",
+        "FEAT_PMULL",
+        "FEAT_SHA1",
+        "FEAT_SHA256",
+        "FEAT_CRC32",
         # Armv8.1
         "FEAT_VHE",
         "FEAT_PAN",
@@ -58,23 +77,67 @@ class ArmExtension(ScopedEnum):
         "FEAT_HPDS",
         "FEAT_VMID16",
         "FEAT_RDM",
+        "FEAT_FHM",  # Optional in Armv8.1
         # Armv8.2
         "FEAT_SVE",
         "FEAT_UAO",
         "FEAT_LVA",  # Optional in Armv8.2
         "FEAT_LPA",  # Optional in Armv8.2
+        "FEAT_F32MM",  # Optional in Armv8.2
+        "FEAT_F64MM",  # Optional in Armv8.2
+        "FEAT_I8MM",  # Optional in Armv8.2
+        "FEAT_DOTPROD",  # Optional in Armv8.2
+        "FEAT_FP16",
+        "FEAT_BF16",  # Optional in Armv8.2
+        "FEAT_AA32BF16",  # Optional in Armv8.2
+        "FEAT_EBF16",  # Optional in Armv8.2
         # Armv8.3
         "FEAT_FCMA",
         "FEAT_JSCVT",
         "FEAT_PAuth",
+        "FEAT_LRCPC",
         # Armv8.4
         "FEAT_SEL2",
+        "FEAT_TLBIOS",
+        "FEAT_TLBIRANGE",
+        "FEAT_FLAGM",
+        "FEAT_IDST",
+        "FEAT_TTST",
+        "FEAT_FRINTTS",  # Optional in Armv8.4
+        "FEAT_LRCPC2",
+        # Armv8.5
+        "FEAT_FLAGM2",
+        "FEAT_RNG",
+        "FEAT_RNG_TRAP",
+        "FEAT_EVT",
+        # Armv8.6
+        "FEAT_FGT",
+        "FEAT_AFP",  # Optional in Armv8.6
+        # Armv8.7
+        "FEAT_HCX",
+        "FEAT_XS",
+        # Armv8.9
+        "FEAT_SCTLR2",
+        "FEAT_TCR2",
+        "FEAT_S1PIE",
+        # Armv9.0
+        "FEAT_SVE2",
+        "FEAT_SVE_BitPerm",
+        "FEAT_SVE_AES",
+        "FEAT_SVE_SHA3",
+        "FEAT_SVE_SM4",
+        "FEAT_SVE_PMULL128",
+        # Armv9.2
+        "FEAT_SME",  # Optional in Armv9.2
+        # Armv9.4
+        "FEAT_SVE2p1",
+        "FEAT_SVE_B16B16",
         # Others
         "SECURITY",
         "LPAE",
         "VIRTUALIZATION",
-        "CRYPTO",
         "TME",
+        "FEAT_MPAM",
     ]
 
 
@@ -123,7 +186,16 @@ class ArmRelease(SimObject):
 
 
 class Armv8(ArmRelease):
-    extensions = ["LPAE", "VIRTUALIZATION", "SECURITY"]
+    extensions = [
+        "LPAE",
+        "VIRTUALIZATION",
+        "SECURITY",
+        "FEAT_AES",
+        "FEAT_PMULL",
+        "FEAT_SHA1",
+        "FEAT_SHA256",
+        "FEAT_CRC32",
+    ]
 
 
 class ArmDefaultRelease(Armv8):
@@ -139,12 +211,36 @@ class ArmDefaultRelease(Armv8):
         "FEAT_LVA",
         "FEAT_LPA",
         "FEAT_SVE",
+        "FEAT_F32MM",
+        "FEAT_F64MM",
+        "FEAT_I8MM",
+        "FEAT_DOTPROD",
+        "FEAT_FP16",
         # Armv8.3
         "FEAT_FCMA",
         "FEAT_JSCVT",
         "FEAT_PAuth",
         # Armv8.4
         "FEAT_SEL2",
+        "FEAT_TLBIOS",
+        "FEAT_TLBIRANGE",
+        "FEAT_FLAGM",
+        "FEAT_IDST",
+        "FEAT_TTST",
+        # Armv8.5
+        "FEAT_FLAGM2",
+        "FEAT_EVT",
+        # Armv8.6
+        "FEAT_FGT",
+        # Armv8.7
+        "FEAT_HCX",
+        "FEAT_XS",
+        # Armv9.0
+        "FEAT_SVE2",
+        # Armv9.2
+        "FEAT_SME",  # Optional in Armv9.2
+        # Armv9.4
+        "FEAT_SVE2p1",
     ]
 
 
@@ -156,6 +252,7 @@ class Armv81(Armv8):
         "FEAT_HPDS",
         "FEAT_VMID16",
         "FEAT_RDM",
+        "FEAT_FHM",
     ]
 
 
@@ -165,6 +262,14 @@ class Armv82(Armv81):
         "FEAT_LVA",
         "FEAT_LPA",
         "FEAT_SVE",
+        "FEAT_F32MM",
+        "FEAT_F64MM",
+        "FEAT_I8MM",
+        "FEAT_DOTPROD",
+        "FEAT_FP16",
+        "FEAT_BF16",
+        "FEAT_AA32BF16",
+        "FEAT_EBF16",
     ]
 
 
@@ -173,7 +278,76 @@ class Armv83(Armv82):
 
 
 class Armv84(Armv83):
-    extensions = Armv83.extensions + ["FEAT_SEL2"]
+    extensions = Armv83.extensions + [
+        "FEAT_SEL2",
+        "FEAT_TLBIOS",
+        "FEAT_TLBIRANGE",
+        "FEAT_FLAGM",
+        "FEAT_IDST",
+        "FEAT_TTST",
+        "FEAT_FRINTTS",
+    ]
+
+
+class Armv85(Armv84):
+    extensions = Armv84.extensions + [
+        "FEAT_FLAGM2",
+        "FEAT_RNG",
+        "FEAT_RNG_TRAP",
+        "FEAT_EVT",
+    ]
+
+
+class Armv86(Armv85):
+    extensions = Armv85.extensions + [
+        "FEAT_FGT",
+        "FEAT_AFP",
+    ]
+
+
+class Armv87(Armv86):
+    extensions = Armv86.extensions + [
+        "FEAT_HCX",
+        "FEAT_XS",
+    ]
+
+
+class Armv89(Armv87):
+    extensions = Armv87.extensions + ["FEAT_SCTLR2", "FEAT_TCR2", "FEAT_S1PIE"]
+
+
+class Armv90(Armv89):
+    extensions = Armv89.extensions + [
+        "FEAT_SVE2",
+        "FEAT_SVE_BitPerm",
+        "FEAT_SVE_AES",
+        "FEAT_SVE_SHA3",
+        "FEAT_SVE_SM4",
+        "FEAT_SVE_PMULL128",
+    ]
+
+
+class Armv92(Armv90):
+    extensions = Armv90.extensions + ["FEAT_SME"]
+
+
+class Armv94(Armv92):
+    extensions = Armv92.extensions + [
+        "FEAT_SVE2p1",
+        "FEAT_SVE_B16B16",
+    ]
+
+
+class ArmAllRelease(ArmRelease):
+    """
+    A release containing any implemented extension.  It is alternatively
+    possible to use the latest release (e.g. Armv92 as of now).  This could be
+    preferrable for consistency across simulations.  However if users want to
+    always be up to date with development, using ArmAllRelease will allow them
+    to do so without the need to change their configuration script
+    """
+
+    extensions = ArmExtension.vals
 
 
 class ArmSystem(System):
@@ -204,6 +378,9 @@ class ArmSystem(System):
     )
     sve_vl = Param.SveVectorLength(
         1, "SVE vector length in quadwords (128-bit)"
+    )
+    sme_vl = Param.SveVectorLength(
+        1, "SME vector length in quadwords (128-bit)"
     )
     semihosting = Param.ArmSemihosting(
         NULL,
@@ -236,7 +413,7 @@ class ArmSystem(System):
         # root instead of appended.
 
         def generateMemNode(mem_range):
-            node = FdtNode("memory@%x" % int(mem_range.start))
+            node = FdtNode(f"memory@{int(mem_range.start):x}")
             node.append(FdtPropertyStrings("device_type", ["memory"]))
             node.append(
                 FdtPropertyWords(

@@ -59,7 +59,6 @@
 namespace gem5
 {
 
-  GEM5_DEPRECATED_NAMESPACE(Minor, minor);
   namespace minor
   {
 
@@ -451,6 +450,13 @@ namespace gem5
       void actuallyExecuteInst(ThreadID thread_id, MinorDynInstPtr inst, Fault &fault, gem5::ThreadContext *thread, bool &committed);
       /** Check if the thread has been suspended. */
       void checkSuspension(ThreadID thread_id, MinorDynInstPtr inst, gem5::ThreadContext *thread, BranchData &branch);
+
+    public:
+      struct IssueStats : public statistics::Group
+      {
+        IssueStats(MinorCPU *cpu);
+        statistics::Vector2d issuedInstType;
+      } issueStats;
     };
 
   } // namespace minor

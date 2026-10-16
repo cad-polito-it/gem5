@@ -1,4 +1,4 @@
-# Copyright (c) 2021 The Regents of the University of California
+# Copyright (c) 2021-2023 The Regents of the University of California
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -24,18 +24,18 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-import m5
-from m5.objects import *
+import argparse
 from os import path
 
-# For downloading the disk image
-from gem5.resources.resource import Resource
+import m5
+from m5.objects import *
 
-import argparse
+# For downloading the disk image
+from gem5.resources.resource import obtain_resource
 
 
 def generateMemNode(state, mem_range):
-    node = FdtNode("memory@%x" % int(mem_range.start))
+    node = FdtNode(f"memory@{int(mem_range.start):x}")
     node.append(FdtPropertyStrings("device_type", ["memory"]))
     node.append(
         FdtPropertyWords(
@@ -102,17 +102,8 @@ def createHiFivePlatform(system):
 
     system.platform = HiFive()
 
-    system.platform.pci_host.pio = system.membus.mem_side_ports
-
-    system.platform.rtc = RiscvRTC(frequency=Frequency("100MHz"))
+    system.platform.rtc = RiscvRTC(frequency=Frequency("10MHz"))
     system.platform.clint.int_pin = system.platform.rtc.int_pin
-
-    system.pma_checker = PMAChecker(
-        uncacheable=[
-            *system.platform._on_chip_ranges(),
-            *system.platform._off_chip_ranges(),
-        ]
-    )
 
     system.iobus = IOXBar()
     system.bridge = Bridge(delay="50ns")
@@ -120,7 +111,29 @@ def createHiFivePlatform(system):
     system.bridge.cpu_side_port = system.membus.mem_side_ports
     system.bridge.ranges = system.platform._off_chip_ranges()
 
+    system.iobus.cpu_side_ports = system.platform.pci_host.up_request_port()
+    system.iobus.mem_side_ports = system.platform.pci_host.up_response_port()
+
+    system.platform.pci_bus.cpu_side_ports = (
+        system.platform.pci_host.down_request_port()
+    )
+    system.platform.pci_bus.default = (
+        system.platform.pci_host.down_response_port()
+    )
+    system.platform.pci_bus.config_error_port = (
+        system.platform.pci_host.config_error.pio
+    )
+
     system.platform.setNumCores(1)
+
+    for cpu in system.cpu:
+        # pma_checker has to be added for each of the system cpus.
+        cpu.mmu.pma_checker = PMAChecker(
+            uncacheable=[
+                *system.platform._on_chip_ranges(),
+                *system.platform._off_chip_ranges(),
+            ]
+        )
 
     system.platform.attachOnChipIO(system.membus)
     system.platform.attachOffChipIO(system.iobus)
@@ -139,7 +152,7 @@ cpu_clock_rate = args.cpu_clock_rate
 memory_size = args.memory_size
 
 # Try downloading the Resource
-bbl_resource = Resource("riscv-boot-exit-nodisk")
+bbl_resource = obtain_resource("riscv-boot-exit-nodisk")
 bbl_path = bbl_resource.get_local_path()
 
 system = System()
@@ -173,3 +186,4 @@ for cpu in system.cpu:
     cpu.createInterruptController()
 
 root = Root(full_system=True, system=system)
+m5.instantiate()

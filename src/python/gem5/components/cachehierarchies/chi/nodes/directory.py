@@ -1,3 +1,15 @@
+# Copyright (c) 2021-2025 Arm Limited
+# All rights reserved.
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
 # Copyright (c) 2021 The Regents of the University of California
 # All Rights Reserved.
 #
@@ -24,12 +36,61 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import math
+from typing import List
+
+from m5.objects import (
+    ClockDomain,
+    RubyCache,
+    RubyNetwork,
+)
+from m5.params import (
+    NULL,
+    AddrRange,
+)
+
 from .abstract_node import AbstractNode
 
-from m5.objects import ClockDomain, NULL, RubyCache, RubyNetwork
+
+class BaseDirectory(AbstractNode):
+    """
+    BaseDirectory. Mainly providing address range generation
+    capabilities (see create_addr_ranges method)
+    """
+
+    def __init__(
+        self,
+        network: RubyNetwork,
+        cache_line_size: int,
+    ):
+        super().__init__(network, cache_line_size)
+
+    @classmethod
+    def create_addr_ranges(
+        cls,
+        num_directories: int,
+        dir_idx: int,
+        mem_ranges: List[AddrRange],
+        cache_line_size,
+    ) -> List[AddrRange]:
+        block_size_bits = int(math.log(cache_line_size, 2))
+        llc_bits = int(math.log(num_directories, 2))
+        numa_bit = block_size_bits + llc_bits - 1
+
+        ranges = []
+        for r in mem_ranges:
+            addr_range = AddrRange(
+                r.start,
+                size=r.size(),
+                intlvHighBit=numa_bit,
+                intlvBits=llc_bits,
+                intlvMatch=dir_idx,
+            )
+            ranges.append(addr_range)
+        return ranges
 
 
-class SimpleDirectory(AbstractNode):
+class SimpleDirectory(BaseDirectory):
     """A directory or home node (HNF)
 
     This simple directory has no cache. It forwards all requests as directly
@@ -41,6 +102,7 @@ class SimpleDirectory(AbstractNode):
         network: RubyNetwork,
         cache_line_size: int,
         clk_domain: ClockDomain,
+        addr_ranges: List[AddrRange],
     ):
         super().__init__(network, cache_line_size)
 
@@ -49,6 +111,7 @@ class SimpleDirectory(AbstractNode):
             dataAccessLatency=0, tagAccessLatency=1, size="128", assoc=1
         )
 
+        self.addr_ranges = addr_ranges
         self.clk_domain = clk_domain
 
         # Only used for L1 controllers
@@ -56,6 +119,7 @@ class SimpleDirectory(AbstractNode):
         self.sequencer = NULL
 
         self.use_prefetcher = False
+        self.prefetcher = NULL
 
         # Set up home node that allows three hop protocols
         self.is_HN = True
@@ -72,6 +136,7 @@ class SimpleDirectory(AbstractNode):
         self.alloc_on_readunique = False
         self.alloc_on_readonce = False
         self.alloc_on_writeback = False
+        self.alloc_on_atomic = False
         self.dealloc_on_unique = False
         self.dealloc_on_shared = False
         self.dealloc_backinv_unique = False

@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "arch/riscv/faults.hh"
+#include "arch/riscv/memflags.hh"
 #include "arch/riscv/mmu.hh"
 #include "arch/riscv/pagetable.hh"
 #include "arch/riscv/pagetable_walker.hh"
@@ -67,6 +68,12 @@ using namespace RiscvISA;
 static Addr
 buildKey(Addr vpn, uint16_t asid)
 {
+    // Note ASID is 16 bits
+    // The VPN in sv39 is up to 39-12=27 bits
+    // The VPN in sv48 is up to 48-12=36 bits
+    // The VPN in sv57 is up to 57-12=45 bits
+    // So, shifting the ASID into the top 16 bits is safe.
+    assert(bits(vpn, 63, 48) == 0);
     return (static_cast<Addr>(asid) << 48) | vpn;
 }
 
@@ -110,6 +117,12 @@ TLB::lookup(Addr vpn, uint16_t asid, BaseMMU::Mode mode, bool hidden)
 {
     TlbEntry *entry = trie.lookup(buildKey(vpn, asid));
 
+    DPRINTF(TLBVerbose, "lookup(vpn=%#x, asid=%#x, key=%#x): "
+                        "%s ppn=%#x (%#x) %s\n",
+            vpn, asid, buildKey(vpn, asid), entry ? "hit" : "miss",
+            entry ? entry->paddr : 0, entry ? entry->size() : 0,
+            hidden ? "hidden" : "");
+
     if (!hidden) {
         if (entry)
             entry->lruSeq = nextSeq();
@@ -131,9 +144,6 @@ TLB::lookup(Addr vpn, uint16_t asid, BaseMMU::Mode mode, bool hidden)
             else
                 stats.readHits++;
         }
-
-        DPRINTF(TLBVerbose, "lookup(vpn=%#x, asid=%#x): %s ppn %#x\n",
-                vpn, asid, entry ? "hit" : "miss", entry ? entry->paddr : 0);
     }
 
     return entry;
@@ -142,15 +152,19 @@ TLB::lookup(Addr vpn, uint16_t asid, BaseMMU::Mode mode, bool hidden)
 TlbEntry *
 TLB::insert(Addr vpn, const TlbEntry &entry)
 {
-    DPRINTF(TLB, "insert(vpn=%#x, asid=%#x): ppn=%#x pte=%#x size=%#x\n",
-        vpn, entry.asid, entry.paddr, entry.pte, entry.size());
+    DPRINTF(TLB, "insert(vpn=%#x, asid=%#x, key=%#x): "
+                 "vaddr=%#x paddr=%#x pte=%#x size=%#x\n",
+        vpn, entry.asid, buildKey(vpn, entry.asid), entry.vaddr, entry.paddr,
+        entry.pte, entry.size());
 
     // If somebody beat us to it, just use that existing entry.
     TlbEntry *newEntry = lookup(vpn, entry.asid, BaseMMU::Read, true);
     if (newEntry) {
         // update PTE flags (maybe we set the dirty/writable flag)
         newEntry->pte = entry.pte;
-        assert(newEntry->vaddr == vpn);
+        assert(newEntry->vaddr == entry.vaddr);
+        assert(newEntry->asid == entry.asid);
+        assert(newEntry->logBytes == entry.logBytes);
         return newEntry;
     }
 
@@ -163,31 +177,46 @@ TLB::insert(Addr vpn, const TlbEntry &entry)
     Addr key = buildKey(vpn, entry.asid);
     *newEntry = entry;
     newEntry->lruSeq = nextSeq();
-    newEntry->vaddr = vpn;
-    newEntry->trieHandle =
-    trie.insert(key, TlbEntryTrie::MaxBits - entry.logBytes, newEntry);
+    newEntry->trieHandle = trie.insert(
+        key, TlbEntryTrie::MaxBits - entry.logBytes + PageShift, newEntry
+    );
     return newEntry;
 }
 
 void
-TLB::demapPage(Addr vpn, uint64_t asid)
+TLB::demapPage(Addr vaddr, uint64_t asid)
 {
+    // Note: vaddr is Reg[rs1] and asid is Reg[rs2]
+    // The definition of this instruction is
+    // if vaddr=x0 and asid=x0, then flush all
+    // if vaddr=x0 and asid!=x0 then flush all with matching asid
+    // if vaddr!=x0 and asid=x0 then flush all leaf PTEs that match vaddr
+    // if vaddr!=x0 and asid!=x0 then flush the leaf PTE that matches vaddr
+    //    in the given asid.
+    // No effect if vaddr is not valid
+    // Currently, we assume if the values of the registers are 0 then it was
+    // referencing x0.
+
     asid &= 0xFFFF;
 
-    if (vpn == 0 && asid == 0)
+    DPRINTF(TLB, "flush(vaddr=%#x, asid=%#x)\n", vaddr, asid);
+    if (vaddr == 0 && asid == 0) {
+        DPRINTF(TLB, "Flushing all TLB entries\n");
         flushAll();
-    else {
-        DPRINTF(TLB, "flush(vpn=%#x, asid=%#x)\n", vpn, asid);
-        if (vpn != 0 && asid != 0) {
-            TlbEntry *newEntry = lookup(vpn, asid, BaseMMU::Read, true);
-            if (newEntry)
-                remove(newEntry - tlb.data());
+    } else {
+        if (vaddr != 0 && asid != 0) {
+            // TODO: When supporting other address translation modes, fix this
+            Addr vpn = getVPNFromVAddr(vaddr, AddrXlateMode::SV39);
+            TlbEntry *entry = lookup(vpn, asid, BaseMMU::Read, true);
+            if (entry) {
+                remove(entry - tlb.data());
+            }
         }
         else {
             for (size_t i = 0; i < size; i++) {
                 if (tlb[i].trieHandle) {
                     Addr mask = ~(tlb[i].size() - 1);
-                    if ((vpn == 0 || (vpn & mask) == tlb[i].vaddr) &&
+                    if ((vaddr == 0 || (vaddr & mask) == tlb[i].vaddr) &&
                         (asid == 0 || tlb[i].asid == asid))
                         remove(i);
                 }
@@ -220,56 +249,89 @@ TLB::remove(size_t idx)
 }
 
 Fault
-TLB::checkPermissions(STATUS status, PrivilegeMode pmode, Addr vaddr,
-                      BaseMMU::Mode mode, PTESv39 pte)
+TLB::checkPermissions(ThreadContext* tc, MemAccessInfo mem_access, Addr vaddr,
+            BaseMMU::Mode mode, PTESv39 pte, Addr gvaddr, XlateStage stage)
 {
-    Fault fault = NoFault;
+    MISA misa = tc->readMiscReg(MISCREG_ISA);
+    STATUS status = tc->readMiscReg(MISCREG_STATUS);
+    PrivilegeMode priv = stage == XlateStage::GSTAGE ?
+        PRV_U : mem_access.priv;
 
-    if (mode == BaseMMU::Read && !pte.r) {
-        DPRINTF(TLB, "PTE has no read perm, raising PF\n");
-        fault = createPagefault(vaddr, mode);
+    bool sum = status.sum;
+    bool mxr = status.mxr;
+    bool gpf = stage == GSTAGE;
+    bool virt = mem_access.virt;
+
+    bool pf = false;
+
+    if (misa.rvh && mem_access.virt && stage == FIRST_STAGE) {
+        STATUS vsstatus = tc->readMiscReg(MISCREG_VSSTATUS);
+        sum = vsstatus.sum;
+        mxr |= vsstatus.mxr;
+    }
+
+
+    if (mem_access.hlvx) {
+        if (!pte.x) {
+            pf = true; DPRINTF(TLB, "HLVX with no exec perm, raising PF\n");
+        }
+    }
+    else if (mode == BaseMMU::Read && !pte.r) {
+        if (mxr && pte.x) {
+            DPRINTF(TLBVerbose, "MXR bit on, load from exec page success\n");
+        }
+        else {
+            pf = true; DPRINTF(TLB, "PTE has no read perm, raising PF\n");
+        }
     }
     else if (mode == BaseMMU::Write && !pte.w) {
-        DPRINTF(TLB, "PTE has no write perm, raising PF\n");
-        fault = createPagefault(vaddr, mode);
+        pf = true; DPRINTF(TLB, "PTE has no write perm, raising PF\n");
     }
     else if (mode == BaseMMU::Execute && !pte.x) {
-        DPRINTF(TLB, "PTE has no exec perm, raising PF\n");
-        fault = createPagefault(vaddr, mode);
+        pf = true; DPRINTF(TLB, "PTE has no exec perm, raising PF\n");
     }
 
-    if (fault == NoFault) {
+    if (!pf) {
         // check pte.u
-        if (pmode == PrivilegeMode::PRV_U && !pte.u) {
-            DPRINTF(TLB, "PTE is not user accessible, raising PF\n");
-            fault = createPagefault(vaddr, mode);
+        if (priv == PRV_U && !pte.u) {
+            pf = true; DPRINTF(TLB, "PTE not user accessible, raising PF\n");
         }
-        else if (pmode == PrivilegeMode::PRV_S && pte.u && status.sum == 0) {
-            DPRINTF(TLB, "PTE is only user accessible, raising PF\n");
-            fault = createPagefault(vaddr, mode);
+        else if (priv == PRV_S && pte.u &&
+                (mode == BaseMMU::Execute || sum == 0)) {
+            pf = true; DPRINTF(TLB, "PTE only user accessible, raising PF\n");
         }
     }
 
-    return fault;
+    return pf ? createPagefault(vaddr, mode, gvaddr, gpf, virt) : NoFault;
 }
 
 Fault
-TLB::createPagefault(Addr vaddr, BaseMMU::Mode mode)
+TLB::createPagefault(Addr vaddr, BaseMMU::Mode mode,
+                     Addr gvaddr, bool gpf, bool virt)
 {
     ExceptionCode code;
-    if (mode == BaseMMU::Read)
-        code = ExceptionCode::LOAD_PAGE;
-    else if (mode == BaseMMU::Write)
-        code = ExceptionCode::STORE_PAGE;
-    else
-        code = ExceptionCode::INST_PAGE;
-    return std::make_shared<AddressFault>(vaddr, code);
+    if (mode == BaseMMU::Read) {
+        code = gpf ? ExceptionCode::LOAD_GUEST_PAGE :
+                     ExceptionCode::LOAD_PAGE;
+    }
+    else if (mode == BaseMMU::Write) {
+        code = gpf ? ExceptionCode::STORE_GUEST_PAGE :
+                     ExceptionCode::STORE_PAGE;
+    }
+    else {
+        code = gpf ? ExceptionCode::INST_GUEST_PAGE :
+                     ExceptionCode::INST_PAGE;
+    }
+
+    if (gpf) { assert(virt); }
+    return std::make_shared<AddressFault>(vaddr, code, gvaddr, virt);
 }
 
 Addr
-TLB::translateWithTLB(Addr vaddr, uint16_t asid, BaseMMU::Mode mode)
+TLB::hiddenTranslateWithTLB(Addr vaddr, uint16_t asid, Addr xmode,
+                            BaseMMU::Mode mode)
 {
-    TlbEntry *e = lookup(vaddr, asid, mode, false);
+    TlbEntry *e = lookup(getVPNFromVAddr(vaddr, xmode), asid, mode, true);
     assert(e != nullptr);
     return e->paddr << PageShift | (vaddr & mask(e->logBytes));
 }
@@ -281,55 +343,164 @@ TLB::doTranslate(const RequestPtr &req, ThreadContext *tc,
 {
     delayed = false;
 
-    Addr vaddr = Addr(sext<VADDR_BITS>(req->getVaddr()));
-    SATP satp = tc->readMiscReg(MISCREG_SATP);
+    MemAccessInfo memaccess = getMemAccessInfo(tc, mode, req->getArchFlags());
+    Addr vaddr = req->getVaddr();
 
-    TlbEntry *e = lookup(vaddr, satp.asid, mode, false);
-    if (!e) {
-        Fault fault = walker->start(tc, translation, req, mode);
+    MISA misa = tc->readMiscReg(MISCREG_ISA);
+
+    SATP satp = (misa.rvh && memaccess.virt) ?
+        tc->readMiscReg(MISCREG_VSATP) :
+        tc->readMiscReg(MISCREG_SATP);
+
+    Addr vpn = getVPNFromVAddr(vaddr, satp.mode);
+
+    TlbEntry *e = nullptr;
+    if (!memaccess.bypassTLB()) {
+        e = lookup(vpn, satp.asid, mode, false);
+        if (!e) {
+            Fault fault = walker->start(tc, translation, req, mode);
+            // Atomic translations have translation == nullptr
+            // so the if body is reachable only in timing
+            if (translation != nullptr) {
+                // If there has been a fault already, do not
+                // mark the translation as delayed as that
+                // will block its deletion
+                if (fault != NoFault) {
+                    delayed = false;
+                } else {
+                    delayed = true;
+                }
+                return fault;
+            }
+            else if (fault != NoFault) {
+                return fault;
+            }
+            e = lookup(vpn, satp.asid, mode, true);
+            assert(e != nullptr);
+        }
+    }
+    else {
+        // Don't lookup and don't insert when bypassing the TLB.
+        // We get the translation result back in memory pointed to by
+        // TlbEntry *e which is not inserted!
+        e = new TlbEntry();
+        Fault fault = walker->start(tc, translation, req, mode, e);
+
         if (translation != nullptr || fault != NoFault) {
             // This gets ignored in atomic mode.
             delayed = true;
             return fault;
         }
-        e = lookup(vaddr, satp.asid, mode, false);
-        assert(e != nullptr);
     }
 
-    STATUS status = tc->readMiscReg(MISCREG_STATUS);
-    PrivilegeMode pmode = getMemPriv(tc, mode);
-    Fault fault = checkPermissions(status, pmode, vaddr, mode, e->pte);
-    if (fault != NoFault) {
-        // if we want to write and it isn't writable, do a page table walk
-        // again to update the dirty flag.
-        if (mode == BaseMMU::Write && !e->pte.w) {
-            DPRINTF(TLB, "Dirty bit not set, repeating PT walk\n");
-            fault = walker->start(tc, translation, req, mode);
-            if (translation != nullptr || fault != NoFault) {
-                delayed = true;
-                return fault;
+    Fault fault;
+    if (memaccess.bypassTLB()) {
+        fault = NoFault;
+    }
+    else {
+        if (memaccess.virt) {
+            if (e->gpte != 0) {
+                fault = checkPermissions(
+                    tc, memaccess, vaddr, mode, e->gpte);
+            } else {
+                fault = NoFault;
             }
         }
-        if (fault != NoFault)
-            return fault;
+        else {
+            fault = checkPermissions(
+                tc, memaccess, vaddr, mode, e->pte);
+        }
     }
 
-    Addr paddr = e->paddr << PageShift | (vaddr & mask(e->logBytes));
-    DPRINTF(TLBVerbose, "translate(vpn=%#x, asid=%#x): %#x\n",
-            vaddr, satp.asid, paddr);
+    // if we want to write and it isn't writable, do a page table walk
+    // again to update the dirty flag.
+    if (e && (mode == BaseMMU::Write) && !e->pte.w) {
+        DPRINTF(TLB, "Dirty bit not set, repeating PT walk\n");
+        fault = walker->start(tc, translation, req, mode);
+        // Atomic translations have translation == nullptr
+        // so the if body is reachable only in timing
+        if (translation != nullptr) {
+            // If there has been a fault already, do not
+            // mark the translation as delayed as that
+            // will block its deletion
+            if (fault != NoFault) {
+                delayed = false;
+            } else {
+                delayed = true;
+            }
+
+            if (memaccess.bypassTLB())
+                delete e;
+            return fault;
+        }
+        else if (fault != NoFault) {
+            if (memaccess.bypassTLB())
+                delete e;
+            return fault;
+        }
+    }
+
+    if (fault != NoFault) {
+        if (memaccess.bypassTLB())
+            delete e;
+        return fault;
+    }
+
+    Addr paddr = ((e->paddr >> (e->logBytes - PageShift)) << e->logBytes)
+        | (vaddr & mask(e->logBytes));
+
+    DPRINTF(TLBVerbose, "translate(vaddr=%#x, vpn=%#x, asid=%#x): %#x\n",
+            vaddr, vpn, satp.asid, paddr);
     req->setPaddr(paddr);
+
+    if (memaccess.bypassTLB())
+        delete e;
 
     return NoFault;
 }
 
-PrivilegeMode
-TLB::getMemPriv(ThreadContext *tc, BaseMMU::Mode mode)
+MemAccessInfo
+TLB::getMemAccessInfo(ThreadContext *tc, BaseMMU::Mode mode,
+        const Request::ArchFlagsType arch_flags)
 {
-    STATUS status = (STATUS)tc->readMiscReg(MISCREG_STATUS);
-    PrivilegeMode pmode = (PrivilegeMode)tc->readMiscReg(MISCREG_PRV);
-    if (mode != BaseMMU::Execute && status.mprv == 1)
-        pmode = (PrivilegeMode)(RegVal)status.mpp;
-    return pmode;
+    MISA misa = tc->readMiscReg(MISCREG_ISA);
+    STATUS status = tc->readMiscReg(MISCREG_STATUS);
+    HSTATUS hstatus = tc->readMiscReg(MISCREG_HSTATUS);
+    PrivilegeMode priv = (PrivilegeMode)tc->readMiscReg(MISCREG_PRV);
+    ISA* isa = dynamic_cast<ISA*>(tc->getIsaPtr());
+    assert(isa);
+
+    bool nmie = !isa->enableSmrnmi() || tc->readMiscRegNoEffect(MISCREG_NMIE);
+    bool in_mprv = nmie && (status.mprv == 1);
+    bool virt = misa.rvh ? virtualizationEnabled(tc) : false;
+    bool force_virt = false;
+    bool hlvx = false;
+    bool lr = false;
+
+    if (mode != BaseMMU::Execute && in_mprv) {
+        priv = (PrivilegeMode)(RegVal)status.mpp;
+        if (misa.rvh && status.mpv && priv != PRV_M) {
+            virt = true;
+        }
+    }
+
+    if (misa.rva) {
+        if (arch_flags & XlateFlags::LR) {
+            lr = true;
+        }
+    }
+
+    if (misa.rvh) {
+        if (arch_flags & XlateFlags::FORCE_VIRT) {
+            priv = (PrivilegeMode)(RegVal)hstatus.spvp;
+            virt = true;
+            force_virt = true;
+        }
+        if (arch_flags & XlateFlags::HLVX) {
+            hlvx = true;
+        }
+    }
+    return MemAccessInfo(priv, virt, force_virt, hlvx, lr);
 }
 
 Fault
@@ -340,20 +511,47 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
     delayed = false;
 
     if (FullSystem) {
-        PrivilegeMode pmode = getMemPriv(tc, mode);
-        SATP satp = tc->readMiscReg(MISCREG_SATP);
-        if (pmode == PrivilegeMode::PRV_M || satp.mode == AddrXlateMode::BARE)
-            req->setFlags(Request::PHYSICAL);
+        MemAccessInfo memaccess = getMemAccessInfo(
+            tc, mode, req->getArchFlags());
+        PrivilegeMode pmode = memaccess.priv;
+        MISA misa = tc->readMiscRegNoEffect(MISCREG_ISA);
+        SATP satp = (misa.rvh && memaccess.virt) ?
+            tc->readMiscReg(MISCREG_VSATP) :
+            tc->readMiscReg(MISCREG_SATP);
 
-        Fault fault;
-        if (req->getFlags() & Request::PHYSICAL) {
-            /**
-             * we simply set the virtual address to physical address
-             */
-            req->setPaddr(req->getVaddr());
-            fault = NoFault;
-        } else {
-            fault = doTranslate(req, tc, translation, mode, delayed);
+        Fault fault = NoFault;
+
+        fault = pma->checkVAddrAlignment(req, mode);
+
+        if (!misa.rvs || pmode == PrivilegeMode::PRV_M ||
+            satp.mode == AddrXlateMode::BARE) {
+
+            // In H-Extension there is the case for VS mode
+            // that SATP's mode is BARE but we still have
+            // to check if we need to perform G-stage (2nd stage)
+            // translation. The request is PHYSICAL only if
+            // HGATP's mode is also BARE, else we perform
+            // the G-stage translation.
+            if (misa.rvh && memaccess.virt) {
+                SATP hgatp = tc->readMiscReg(MISCREG_HGATP);
+                if (hgatp.mode == AddrXlateMode::BARE) {
+                    req->setFlags(Request::PHYSICAL);
+                }
+            }
+            else {
+                req->setFlags(Request::PHYSICAL);
+            }
+        }
+
+        if (fault == NoFault) {
+            if (req->getFlags() & Request::PHYSICAL) {
+                /**
+                 * we simply set the virtual address to physical address.
+                 */
+                req->setPaddr(getValidAddr(req->getVaddr(), tc, mode));
+            } else {
+                fault = doTranslate(req, tc, translation, mode, delayed);
+            }
         }
 
         // according to the RISC-V tests, negative physical addresses trigger
@@ -371,14 +569,15 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
         }
 
         if (!delayed && fault == NoFault) {
-            pma->check(req);
-
             // do pmp check if any checking condition is met.
             // timingFault will be NoFault if pmp checks are
             // passed, otherwise an address fault will be returned.
             fault = pmp->pmpCheck(req, mode, pmode, tc);
         }
 
+        if (!delayed && fault == NoFault) {
+            fault = pma->check(req, mode);
+        }
         return fault;
     } else {
         // In the O3 CPU model, sometimes a memory access will be speculatively
@@ -394,9 +593,18 @@ TLB::translate(const RequestPtr &req, ThreadContext *tc,
 
         Process * p = tc->getProcessPtr();
 
-        Fault fault = p->pTable->translate(req);
-        if (fault != NoFault)
-            return fault;
+        /*
+         * In RV32 Linux, as vaddr >= 0x80000000 is legal in userspace
+         * (except for COMPAT mode for RV32 Userspace in RV64 Linux), we
+         * need to ignore the upper bits beyond 32 bits.
+         */
+        Addr vaddr = getValidAddr(req->getVaddr(), tc, mode);
+        Addr paddr;
+
+        if (!p->pTable->translate(vaddr, paddr))
+            return std::make_shared<GenericPageTableFault>(req->getVaddr());
+
+        req->setPaddr(paddr);
 
         return NoFault;
     }
@@ -427,15 +635,18 @@ Fault
 TLB::translateFunctional(const RequestPtr &req, ThreadContext *tc,
                          BaseMMU::Mode mode)
 {
-    const Addr vaddr = req->getVaddr();
+    const Addr vaddr = getValidAddr(req->getVaddr(), tc, mode);
     Addr paddr = vaddr;
 
     if (FullSystem) {
         MMU *mmu = static_cast<MMU *>(tc->getMMUPtr());
 
-        PrivilegeMode pmode = mmu->getMemPriv(tc, mode);
+        MemAccessInfo memaccess = getMemAccessInfo(
+            tc, mode, req->getArchFlags());
+        PrivilegeMode pmode = memaccess.priv;
+        MISA misa = tc->readMiscRegNoEffect(MISCREG_ISA);
         SATP satp = tc->readMiscReg(MISCREG_SATP);
-        if (pmode != PrivilegeMode::PRV_M &&
+        if (misa.rvs && pmode != PrivilegeMode::PRV_M &&
             satp.mode != AddrXlateMode::BARE) {
             Walker *walker = mmu->getDataWalker();
             unsigned logBytes;
@@ -510,9 +721,11 @@ TLB::unserialize(CheckpointIn &cp)
         freeList.pop_front();
 
         newEntry->unserializeSection(cp, csprintf("Entry%d", x));
-        Addr key = buildKey(newEntry->vaddr, newEntry->asid);
+        // TODO: When supporting other addressing modes fix this
+        Addr vpn = getVPNFromVAddr(newEntry->vaddr, AddrXlateMode::SV39);
+        Addr key = buildKey(vpn, newEntry->asid);
         newEntry->trieHandle = trie.insert(key,
-            TlbEntryTrie::MaxBits - newEntry->logBytes, newEntry);
+            TlbEntryTrie::MaxBits - newEntry->logBytes + PageShift, newEntry);
     }
 }
 

@@ -45,7 +45,6 @@
 #include "dev/arm/smmu_v3_events.hh"
 #include "dev/arm/smmu_v3_ports.hh"
 #include "dev/arm/smmu_v3_proc.hh"
-#include "params/SMMUv3DeviceInterface.hh"
 #include "sim/clocked_object.hh"
 
 namespace gem5
@@ -54,6 +53,8 @@ namespace gem5
 class SMMUTranslationProcess;
 class SMMUv3;
 class SMMUDevicePort;
+
+struct SMMUv3DeviceInterfaceParams;
 
 class SMMUv3DeviceInterface : public ClockedObject
 {
@@ -114,9 +115,7 @@ class SMMUv3DeviceInterface : public ClockedObject
     bool atsDeviceNeedsRetry;
 
     SMMUDeviceRetryEvent sendDeviceRetryEvent;
-    EventWrapper<
-        SMMUv3DeviceInterface,
-        &SMMUv3DeviceInterface::atsSendDeviceRetry> atsSendDeviceRetryEvent;
+    MemberEventWrapper<&SMMUv3DeviceInterface::atsSendDeviceRetry> atsSendDeviceRetryEvent;
 
     Port& getPort(const std::string &name, PortID id) override;
 

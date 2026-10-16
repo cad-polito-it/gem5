@@ -24,9 +24,12 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.SimObject import SimObject
+from m5.objects.PciDevice import (
+    PciEndpoint,
+    PciIoBar,
+)
 from m5.params import *
-from m5.objects.PciDevice import PciDevice, PciIoBar
+from m5.SimObject import SimObject
 
 
 class IdeID(Enum):
@@ -42,7 +45,7 @@ class IdeDisk(SimObject):
     image = Param.DiskImage("Disk image")
 
 
-class IdeController(PciDevice):
+class IdeController(PciEndpoint):
     type = "IdeController"
     cxx_header = "dev/storage/ide_ctrl.hh"
     cxx_class = "gem5::IdeController"

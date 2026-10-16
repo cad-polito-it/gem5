@@ -108,6 +108,13 @@ SimpleMemory::recvFunctional(PacketPtr pkt)
     pkt->popLabel();
 }
 
+void
+SimpleMemory::recvMemBackdoorReq(const MemBackdoorReq &req,
+        MemBackdoorPtr &_backdoor)
+{
+    getBackdoor(_backdoor);
+}
+
 bool
 SimpleMemory::recvTimingReq(PacketPtr pkt)
 {
@@ -230,7 +237,7 @@ Tick
 SimpleMemory::getLatency() const
 {
     return latency +
-        (latency_var ? random_mt.random<Tick>(0, latency_var) : 0);
+        (latency_var ? rng->random<Tick>(0, latency_var) : 0);
 }
 
 void
@@ -264,7 +271,7 @@ SimpleMemory::drain()
 
 SimpleMemory::MemoryPort::MemoryPort(const std::string& _name,
                                      SimpleMemory& _memory)
-    : ResponsePort(_name, &_memory), mem(_memory)
+    : ResponsePort(_name), mem(_memory)
 { }
 
 AddrRangeList
@@ -292,6 +299,13 @@ void
 SimpleMemory::MemoryPort::recvFunctional(PacketPtr pkt)
 {
     mem.recvFunctional(pkt);
+}
+
+void
+SimpleMemory::MemoryPort::recvMemBackdoorReq(const MemBackdoorReq &req,
+        MemBackdoorPtr &backdoor)
+{
+    mem.recvMemBackdoorReq(req, backdoor);
 }
 
 bool

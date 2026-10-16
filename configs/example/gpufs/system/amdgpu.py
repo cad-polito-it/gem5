@@ -33,7 +33,11 @@ from m5.objects import *
 
 def createGPU(system, args):
     shader = Shader(
-        n_wf=args.wfs_per_simd, timing=True, clk_domain=system.clk_domain
+        n_wf=args.wfs_per_simd,
+        cu_per_sqc=args.cu_per_sqc,
+        timing=True,
+        clk_domain=system.clk_domain,
+        progress_interval=args.gpu_progress_interval,
     )
 
     # VIPER GPU protocol implements release consistency at GPU side. So,
@@ -72,6 +76,14 @@ def createGPU(system, args):
                 execPolicy=args.CUExecPolicy,
                 localMemBarrier=args.LocalMemBarrier,
                 countPages=args.countPages,
+                memtime_latency=args.memtime_latency,
+                max_cu_tokens=args.max_cu_tokens,
+                vrf_lm_bus_latency=args.vrf_lm_bus_latency,
+                mem_req_latency=args.mem_req_latency,
+                mem_resp_latency=args.mem_resp_latency,
+                scalar_mem_req_latency=args.scalar_mem_req_latency,
+                scalar_mem_resp_latency=args.scalar_mem_resp_latency,
+                mfma_scale=args.mfma_scale,
                 localDataStore=LdsState(
                     banks=args.numLdsBanks,
                     bankConflictPenalty=args.ldsBankConflictPenalty,
@@ -84,6 +96,7 @@ def createGPU(system, args):
         vrfs = []
         vrf_pool_mgrs = []
         srfs = []
+        rfcs = []
         srf_pool_mgrs = []
         for j in range(args.simds_per_cu):
             for k in range(shader.n_wf):
@@ -133,10 +146,16 @@ def createGPU(system, args):
                     num_regs=args.sreg_file_size,
                 )
             )
+            rfcs.append(
+                RegisterFileCache(
+                    simd_id=j, cache_size=args.register_file_cache_size
+                )
+            )
 
         compute_units[-1].wavefronts = wavefronts
         compute_units[-1].vector_register_file = vrfs
         compute_units[-1].scalar_register_file = srfs
+        compute_units[-1].register_file_cache = rfcs
         compute_units[-1].register_manager = RegisterManager(
             policy=args.registerManagerPolicy,
             vrf_pool_managers=vrf_pool_mgrs,
@@ -163,10 +182,57 @@ def createGPU(system, args):
 
 
 def connectGPU(system, args):
-    system.pc.south_bridge.gpu = AMDGPUDevice(pci_func=0, pci_dev=8, pci_bus=0)
+    system.pc.south_bridge.gpu = AMDGPUDevice(pci_func=0, pci_dev=8)
 
-    system.pc.south_bridge.gpu.trace_file = args.gpu_mmio_trace
-    system.pc.south_bridge.gpu.rom_binary = args.gpu_rom
+    system.pc.south_bridge.gpu.ipt_binary = args.gpu_ipt
     system.pc.south_bridge.gpu.checkpoint_before_mmios = (
         args.checkpoint_before_mmios
     )
+
+    system.pc.south_bridge.gpu.device_name = args.gpu_device
+
+    if args.gpu_device == "MI100":
+        system.pc.south_bridge.gpu.DeviceID = 0x738C
+        system.pc.south_bridge.gpu.SubsystemVendorID = 0x1002
+        system.pc.south_bridge.gpu.SubsystemID = 0x0C34
+    elif args.gpu_device == "MI200":
+        system.pc.south_bridge.gpu.DeviceID = 0x740F
+        system.pc.south_bridge.gpu.SubsystemVendorID = 0x1002
+        system.pc.south_bridge.gpu.SubsystemID = 0x0C34
+    elif args.gpu_device == "MI300X":
+        system.pc.south_bridge.gpu.DeviceID = 0x74A1
+        system.pc.south_bridge.gpu.SubsystemVendorID = 0x1002
+        system.pc.south_bridge.gpu.SubsystemID = 0x0C34
+        system.pc.south_bridge.gpu.BAR5 = PciMemBar(size="2MiB")
+    elif args.gpu_device == "MI355X":
+        system.pc.south_bridge.gpu.DeviceID = 0x75A0
+        system.pc.south_bridge.gpu.SubsystemVendorID = 0x1002
+        system.pc.south_bridge.gpu.SubsystemID = 0x0C34
+        system.pc.south_bridge.gpu.BAR5 = PciMemBar(size="2MiB")
+    elif args.gpu_device == "Vega10":
+        system.pc.south_bridge.gpu.DeviceID = 0x6863
+    else:
+        m5.util.panic(f"Unknown GPU device: {args.gpu_device}")
+
+    # Use the gem5 default of 0x280 OR'd  with 0x10 which tells Linux there is
+    # a PCI capabilities list to travse.
+    system.pc.south_bridge.gpu.Status = 0x0290
+
+    # The PCI capabilities are like a linked list. The list has a memory
+    # offset and a capability type ID read by the OS. Make the first
+    # capability at 0x80 and set the PXCAP (PCI express) capability to
+    # that address. Mark the type ID as PCI express.
+    # We leave the next ID of PXCAP blank to end the list.
+    system.pc.south_bridge.gpu.PXCAPBaseOffset = 0x80
+    system.pc.south_bridge.gpu.CapabilityPtr = 0x80
+    system.pc.south_bridge.gpu.PXCAPCapId = 0x10
+
+    # Set bits 7 and 8 in the second PCIe device capabilities register which
+    # reports support for PCIe atomics for 32 and 64 bits respectively.
+    # Bit 9 for 128-bit compare and swap is not set because the amdgpu driver
+    # does not check this.
+    system.pc.south_bridge.gpu.PXCAPDevCap2 = 0x00000180
+
+    # Set bit 6 to enable atomic requestor, meaning this device can request
+    # atomics from other PCI devices.
+    system.pc.south_bridge.gpu.PXCAPDevCtrl2 = 0x0040

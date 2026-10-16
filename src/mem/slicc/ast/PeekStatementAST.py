@@ -40,11 +40,13 @@ class PeekStatementAST(StatementAST):
         self.method = method
 
     def __repr__(self):
-        return "[PeekStatementAST: %r queue_name: %r type: %r %r]" % (
-            self.method,
-            self.queue_name,
-            self.type_ast,
-            self.statements,
+        return (
+            "[PeekStatementAST: {!r} queue_name: {!r} type: {!r} {!r}]".format(
+                self.method,
+                self.queue_name,
+                self.type_ast,
+                self.statements,
+            )
         )
 
     def generate(self, code, return_type, **kwargs):
@@ -91,7 +93,8 @@ class PeekStatementAST(StatementAST):
     if (m_is_blocking &&
         (m_block_map.count(in_msg_ptr->m_$address_field) == 1) &&
         (m_block_map[in_msg_ptr->m_$address_field] != &$qcode)) {
-            $qcode.delayHead(clockEdge(), cyclesToTicks(Cycles(1)));
+            $qcode.delayHead(clockEdge(), cyclesToTicks(Cycles(1)),
+            m_ruby_system->getRandomization(), m_ruby_system->getWarmupEnabled());
             continue;
     }
             """

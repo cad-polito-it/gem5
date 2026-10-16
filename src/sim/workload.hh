@@ -34,6 +34,7 @@
 #include "base/loader/object_file.hh"
 #include "base/loader/symtab.hh"
 #include "enums/ByteOrder.hh"
+#include "gdbremote/signals.hh"
 #include "params/StubWorkload.hh"
 #include "params/Workload.hh"
 #include "sim/sim_object.hh"
@@ -91,7 +92,7 @@ class Workload : public SimObject
 
     // Once trapping into GDB is no longer a special case routed through the
     // system object, this helper can be removed.
-    bool trapToGdb(int signal, ContextID ctx_id);
+    bool trapToGdb(GDBSignal sig, ContextID ctx_id);
     bool sendToGdb(std::string msg);
 
     virtual void registerThreadContext(ThreadContext *tc);
@@ -102,6 +103,8 @@ class Workload : public SimObject
     virtual Addr getEntry() const = 0;
     virtual ByteOrder byteOrder() const = 0;
     virtual loader::Arch getArch() const = 0;
+    /// Returns the semihosting interface if supported by the current workload.
+    virtual SimObject* getSemihosting() const { return nullptr; }
 
     virtual const loader::SymbolTable &symtab(ThreadContext *tc) = 0;
     virtual bool insertSymbol(const loader::Symbol &symbol) = 0;
@@ -140,7 +143,7 @@ class Workload : public SimObject
         if (it == symtab.end())
             return nullptr;
 
-        return new T(system, desc, fixFuncEventAddr(it->address),
+        return new T(system, desc, fixFuncEventAddr(it->address()),
                       std::forward<Args>(args)...);
     }
 

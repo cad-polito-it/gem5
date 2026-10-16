@@ -42,7 +42,6 @@
 #ifndef __MEM_RUBY_STRUCTURES_CACHEMEMORY_HH__
 #define __MEM_RUBY_STRUCTURES_CACHEMEMORY_HH__
 
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -52,9 +51,8 @@
 #include "mem/ruby/common/DataBlock.hh"
 #include "mem/ruby/protocol/CacheRequestType.hh"
 #include "mem/ruby/protocol/CacheResourceType.hh"
-#include "mem/ruby/protocol/RubyRequest.hh"
 #include "mem/ruby/slicc_interface/AbstractCacheEntry.hh"
-#include "mem/ruby/slicc_interface/RubySlicc_ComponentMapping.hh"
+#include "mem/ruby/structures/ALUFreeListArray.hh"
 #include "mem/ruby/structures/BankedArray.hh"
 #include "mem/ruby/system/CacheRecorder.hh"
 #include "params/RubyCache.hh"
@@ -153,6 +151,8 @@ class CacheMemory : public SimObject
     void htmAbortTransaction();
     void htmCommitTransaction();
 
+    void setRubySystem(RubySystem* rs);
+
   public:
     int getCacheSize() const { return m_cache_size; }
     int getCacheAssoc() const { return m_cache_assoc; }
@@ -186,6 +186,7 @@ class CacheMemory : public SimObject
 
     BankedArray dataArray;
     BankedArray tagArray;
+    ALUFreeListArray atomicALUArray;
 
     int m_cache_size;
     int m_cache_num_sets;
@@ -211,6 +212,14 @@ class CacheMemory : public SimObject
      */
     bool m_use_occupancy;
 
+    RubySystem *m_ruby_system = nullptr;
+
+    Addr
+    makeLineAddress(Addr addr) const
+    {
+        return ruby::makeLineAddress(addr, floorLog2(m_block_size));
+    }
+
     private:
       struct CacheMemoryStats : public statistics::Group
       {
@@ -223,6 +232,9 @@ class CacheMemory : public SimObject
 
           statistics::Scalar numTagArrayStalls;
           statistics::Scalar numDataArrayStalls;
+
+          statistics::Scalar numAtomicALUOperations;
+          statistics::Scalar numAtomicALUArrayStalls;
 
           // hardware transactional memory
           statistics::Histogram htmTransCommitReadSet;

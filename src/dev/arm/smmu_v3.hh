@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2018-2020 ARM Limited
+ * Copyright (c) 2013, 2018-2020, 2024 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -53,7 +53,6 @@
 #include "dev/arm/smmu_v3_ports.hh"
 #include "dev/arm/smmu_v3_proc.hh"
 #include "mem/packet.hh"
-#include "params/SMMUv3.hh"
 #include "sim/clocked_object.hh"
 #include "sim/eventq.hh"
 
@@ -79,7 +78,11 @@
 namespace gem5
 {
 
+class ArmInterruptPin;
 class SMMUTranslationProcess;
+class System;
+
+struct SMMUv3Params;
 
 class SMMUv3 : public ClockedObject
 {
@@ -97,7 +100,9 @@ class SMMUv3 : public ClockedObject
     SMMUTableWalkPort tableWalkPort;
     SMMUControlPort   controlPort;
 
-    const bool irqInterfaceEnable;
+    // This could be nullptr if wired implementation of the
+    // event queue interrupt is not supported
+    ArmInterruptPin * const eventqInterrupt;
 
     ARMArchTLB  tlb;
     ConfigCache configCache;
@@ -167,7 +172,7 @@ class SMMUv3 : public ClockedObject
     SMMUAction runProcessTiming(SMMUProcess *proc, PacketPtr pkt);
 
     void processCommands();
-    EventWrapper<SMMUv3, &SMMUv3::processCommands> processCommandsEvent;
+    MemberEventWrapper<&SMMUv3::processCommands> processCommandsEvent;
 
     void processCommand(const SMMUCommand &cmd);
 

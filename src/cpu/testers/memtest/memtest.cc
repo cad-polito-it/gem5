@@ -41,7 +41,6 @@
 #include "cpu/testers/memtest/memtest.hh"
 
 #include "base/compiler.hh"
-#include "base/random.hh"
 #include "base/statistics.hh"
 #include "base/trace.hh"
 #include "debug/MemTest.hh"
@@ -94,6 +93,7 @@ MemTest::MemTest(const Params &p)
       percentReads(p.percent_reads),
       percentFunctional(p.percent_functional),
       percentUncacheable(p.percent_uncacheable),
+      percentAtomic(p.percent_atomic),
       requestorId(p.system->getRequestorId(this)),
       blockSize(p.system->cacheLineSize()),
       blockAddrMask(blockSize - 1),
@@ -115,6 +115,7 @@ MemTest::MemTest(const Params &p)
     // set up counters
     numReads = 0;
     numWrites = 0;
+    numAtomics = 0;
 
     // kick things into action
     schedule(tickEvent, curTick());
@@ -142,18 +143,36 @@ MemTest::completeRequest(PacketPtr pkt, bool functional)
     outstandingAddrs.erase(remove_addr);
 
     DPRINTF(MemTest, "Completing %s at address %x (blk %x) %s\n",
-            pkt->isWrite() ? "write" : "read",
+            pkt->isWrite() ? pkt->isAtomicOp() ? "atomic" : "write" : "read",
             req->getPaddr(), blockAlign(req->getPaddr()),
             pkt->isError() ? "error" : "success");
 
     const uint8_t *pkt_data = pkt->getConstPtr<uint8_t>();
 
     if (pkt->isError()) {
-        if (!functional || !suppressFuncErrors)
+        if (!functional || !pkt->suppressFuncError() || !suppressFuncErrors)
             panic( "%s access failed at %#x\n",
                 pkt->isWrite() ? "Write" : "Read", req->getPaddr());
     } else {
-        if (pkt->isRead()) {
+        if (pkt->isAtomicOp()) {
+            uint8_t ref_data = referenceData[req->getPaddr()];
+            if (pkt_data[0] != ref_data) {
+                panic("%s: read of %x (blk %x) @ cycle %d "
+                      "returns %x, expected %x\n", name(),
+                       req->getPaddr(), blockAlign(req->getPaddr()), curTick(),
+                       pkt_data[0], ref_data);
+            }
+            DPRINTF(MemTest,
+                    "Completing atomic at address %x (blk %x) value %x\n",
+                    req->getPaddr(), blockAlign(req->getPaddr()),
+                    pkt_data[0]);
+
+            referenceData[req->getPaddr()] =
+                   atomicPendingData[req->getPaddr()];
+
+            numAtomics++;
+            stats.numAtomics++;
+        } else if (pkt->isRead()) {
             uint8_t ref_data = referenceData[req->getPaddr()];
             if (pkt_data[0] != ref_data) {
                 panic("%s: read of %x (blk %x) @ cycle %d "
@@ -167,9 +186,10 @@ MemTest::completeRequest(PacketPtr pkt, bool functional)
 
             if (numReads == (uint64_t)nextProgressMessage) {
                 ccprintf(std::cerr,
-                        "%s: completed %d read, %d write accesses @%d\n",
-                        name(), numReads, numWrites, curTick());
-                nextProgressMessage += progressInterval;
+                        "%s: completed %d read, %d write, "
+                        "%d atomic accesses @%d\n",
+                        name(), numReads, numWrites, numAtomics, curTick());
+                        nextProgressMessage += progressInterval;
             }
 
             if (maxLoads != 0 && numReads >= maxLoads)
@@ -205,7 +225,9 @@ MemTest::MemTestStats::MemTestStats(statistics::Group *parent)
       ADD_STAT(numReads, statistics::units::Count::get(),
                "number of read accesses completed"),
       ADD_STAT(numWrites, statistics::units::Count::get(),
-               "number of write accesses completed")
+               "number of write accesses completed"),
+      ADD_STAT(numAtomics, statistics::units::Count::get(),
+               "number of atomic accesses completed")
 {
 
 }
@@ -218,10 +240,12 @@ MemTest::tick()
     assert(!waitResponse);
 
     // create a new request
-    unsigned cmd = random_mt.random(0, 100);
-    uint8_t data = random_mt.random<uint8_t>();
-    bool uncacheable = random_mt.random(0, 100) < percentUncacheable;
-    unsigned base = random_mt.random(0, 1);
+    unsigned cmd = rng->random(0, 100);
+    uint8_t data = rng->random<uint8_t>();
+    bool uncacheable = rng->random(0, 100) < percentUncacheable;
+    bool do_atomic = (rng->random(0, 100) < percentAtomic) &&
+                     !uncacheable;
+    unsigned base = rng->random(0, 1);
     Request::Flags flags;
     Addr paddr;
 
@@ -234,7 +258,7 @@ MemTest::tick()
 
     // generate a unique address
     do {
-        unsigned offset = random_mt.random<unsigned>(0, size - 1);
+        unsigned offset = rng->random<unsigned>(0, size - 1);
 
         // use the tester id as offset within the block for false sharing
         offset = blockAlign(offset);
@@ -248,7 +272,7 @@ MemTest::tick()
         }
     } while (outstandingAddrs.find(paddr) != outstandingAddrs.end());
 
-    bool do_functional = (random_mt.random(0, 100) < percentFunctional) &&
+    bool do_functional = (rng->random(0, 100) < percentFunctional) &&
         !uncacheable;
     RequestPtr req = std::make_shared<Request>(paddr, 1, flags, requestorId);
     req->setContext(id);
@@ -281,13 +305,36 @@ MemTest::tick()
         pkt = new Packet(req, MemCmd::ReadReq);
         pkt->dataDynamic(pkt_data);
     } else {
-        DPRINTF(MemTest, "Initiating %swrite at addr %x (blk %x) value %x\n",
-                do_functional ? "functional " : "", req->getPaddr(),
-                blockAlign(req->getPaddr()), data);
+        if (do_atomic) {
+            DPRINTF(MemTest,
+                    "Initiating atomic at addr %x (blk %x) value %x\n",
+                    req->getPaddr(), blockAlign(req->getPaddr()), data);
 
-        pkt = new Packet(req, MemCmd::WriteReq);
-        pkt->dataDynamic(pkt_data);
-        pkt_data[0] = data;
+            TypedAtomicOpFunctor<uint8_t> *_amo_op =
+                  new AtomicGeneric3Op<uint8_t>(
+                  data, data,
+                  [](uint8_t* b, uint8_t a, uint8_t c){
+                      *b = c;
+                  });
+            assert(_amo_op);
+            AtomicOpFunctorPtr amo_op = AtomicOpFunctorPtr(_amo_op);
+            req->setAtomicOpFunctor(std::move(amo_op));
+            req->setFlags(Request::ATOMIC_RETURN_OP);
+
+            pkt = new Packet(req, MemCmd::WriteReq);
+            pkt->dataDynamic(pkt_data);
+            pkt_data[0] = data;
+            atomicPendingData[req->getPaddr()] = data;
+        } else {
+            DPRINTF(MemTest,
+                    "Initiating %swrite at addr %x (blk %x) value %x\n",
+                    do_functional ? "functional " : "", req->getPaddr(),
+                    blockAlign(req->getPaddr()), data);
+
+            pkt = new Packet(req, MemCmd::WriteReq);
+            pkt->dataDynamic(pkt_data);
+            pkt_data[0] = data;
+        }
     }
 
     // there is no point in ticking if we are waiting for a retry

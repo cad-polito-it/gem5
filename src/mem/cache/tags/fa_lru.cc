@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2023-2024 ARM Limited
  * Copyright (c) 2018 Inria
  * Copyright (c) 2013,2016-2018 ARM Limited
  * All rights reserved.
@@ -52,7 +53,6 @@
 #include "base/compiler.hh"
 #include "base/intmath.hh"
 #include "base/logging.hh"
-#include "mem/cache/base.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
 
 namespace gem5
@@ -74,6 +74,8 @@ FALRU::FALRU(const Params &p)
               blkSize);
     if (!isPowerOf2(size))
         fatal("Cache Size must be power of 2 for now");
+    if (partitionManager)
+        fatal("Cannot use Cache Partitioning Policies with FALRU");
 
     blks = new FALRUBlk[numBlocks];
 }
@@ -142,7 +144,7 @@ FALRU::accessBlock(const PacketPtr pkt, Cycles &lat,
 {
     CachesMask mask = 0;
     FALRUBlk* blk =
-        static_cast<FALRUBlk*>(findBlock(pkt->getAddr(), pkt->isSecure()));
+        static_cast<FALRUBlk*>(findBlock({pkt->getAddr(), pkt->isSecure()}));
 
     // If a cache hit
     if (blk && blk->isValid()) {
@@ -164,19 +166,20 @@ FALRU::accessBlock(const PacketPtr pkt, Cycles &lat,
 }
 
 CacheBlk*
-FALRU::findBlock(Addr addr, bool is_secure) const
+FALRU::findBlock(const CacheBlk::KeyType &lookup) const
 {
     FALRUBlk* blk = nullptr;
 
-    Addr tag = extractTag(addr);
-    auto iter = tagHash.find(std::make_pair(tag, is_secure));
+    Addr tag = extractTag(lookup.address);
+    auto key = std::make_pair(tag, lookup.secure);
+    auto iter = tagHash.find(key);
     if (iter != tagHash.end()) {
         blk = (*iter).second;
     }
 
     if (blk && blk->isValid()) {
         assert(blk->getTag() == tag);
-        assert(blk->isSecure() == is_secure);
+        assert(blk->isSecure() == lookup.secure);
     }
 
     return blk;
@@ -190,8 +193,9 @@ FALRU::findBlockBySetAndWay(int set, int way) const
 }
 
 CacheBlk*
-FALRU::findVictim(Addr addr, const bool is_secure, const std::size_t size,
-                  std::vector<CacheBlk*>& evict_blks)
+FALRU::findVictim(const CacheBlk::KeyType& key, const std::size_t size,
+                  std::vector<CacheBlk*>& evict_blks,
+                  const uint64_t partition_id)
 {
     // The victim is always stored on the tail for the FALRU
     FALRUBlk* victim = tail;

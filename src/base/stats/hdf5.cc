@@ -59,7 +59,6 @@ bool emptyStrings(const T &labels)
 }
 
 
-GEM5_DEPRECATED_NAMESPACE(Stats, statistics);
 namespace statistics
 {
 
@@ -79,10 +78,11 @@ Hdf5::~Hdf5()
 {
 }
 
-
 void
-Hdf5::begin()
+Hdf5::begin(const std::string &message)
 {
+    // HDF5 format ignores the message parameter
+    // as it doesn't support text messages
     h5File = H5::H5File(fname,
                         // Truncate the file if this is the first dump
                         dumpCount > 0 ? H5F_ACC_RDWR : H5F_ACC_TRUNC);

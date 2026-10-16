@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2017 ARM Limited
+ * Copyright (c) 2012, 2017, 2025 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -103,7 +103,8 @@ class Rename
         Squashing,
         Blocked,
         Unblocking,
-        SerializeStall
+        SerializeStall,
+        ThreadStatusMax
     };
 
   private:
@@ -170,7 +171,7 @@ class Rename
     void setActiveThreads(std::list<ThreadID> *at_ptr);
 
     /** Sets pointer to rename maps (per-thread structures). */
-    void setRenameMap(UnifiedRenameMap rm_ptr[MaxThreads]);
+    void setRenameMap(UnifiedRenameMap::PerThreadUnifiedRenameMap& rm_ptr);
 
     /** Sets pointer to the free list. */
     void setFreeList(UnifiedFreeList *fl_ptr);
@@ -253,6 +254,9 @@ class Rename
 
     /** Renames the destination registers of an instruction. */
     void renameDestRegs(const DynInstPtr &inst, ThreadID tid);
+
+    /** Should we SerializeBefore the current instruction */
+    void handleMiscRegWaW(DynInstPtr &inst, ThreadID tid);
 
     /** Calculates the number of free ROB entries for a specific thread. */
     int calcFreeROBEntries(ThreadID tid);
@@ -358,6 +362,9 @@ class Rename
 
     /** Free list interface. */
     UnifiedFreeList *freeList;
+
+    /** Hold phys regs to be released after squash finish */
+    std::vector<PhysRegIdPtr> freeingInProgress[MaxThreads];
 
     /** Pointer to the list of active threads. */
     std::list<ThreadID> *activeThreads;
@@ -478,21 +485,13 @@ class Rename
 
     struct RenameStats : public statistics::Group
     {
+        static std::string statusStrings[ThreadStatusMax];
+        static std::string statusDefinitions[ThreadStatusMax];
+
         RenameStats(statistics::Group *parent);
 
-        /** Stat for total number of cycles spent squashing. */
-        statistics::Scalar squashCycles;
-        /** Stat for total number of cycles spent idle. */
-        statistics::Scalar idleCycles;
-        /** Stat for total number of cycles spent blocking. */
-        statistics::Scalar blockCycles;
-        /** Stat for total number of cycles spent stalling for a serializing
-         *  inst. */
-        statistics::Scalar serializeStallCycles;
-        /** Stat for total number of cycles spent running normally. */
-        statistics::Scalar runCycles;
-        /** Stat for total number of cycles spent unblocking. */
-        statistics::Scalar unblockCycles;
+        /** Stat for total number of cycles spent in each rename state */
+        statistics::Vector status;
         /** Stat for total number of renamed instructions. */
         statistics::Scalar renamedInsts;
         /** Stat for total number of squashed instructions that rename
@@ -521,6 +520,7 @@ class Rename
         statistics::Scalar fpLookups;
         statistics::Scalar vecLookups;
         statistics::Scalar vecPredLookups;
+        statistics::Scalar matLookups;
         /** Stat for total number of committed renaming mappings. */
         statistics::Scalar committedMaps;
         /** Stat for total number of mappings that were undone due to a
@@ -532,6 +532,10 @@ class Rename
         statistics::Scalar tempSerializing;
         /** Number of instructions inserted into skid buffers. */
         statistics::Scalar skidInsts;
+        /** Number of registers freed and written back to integer free list*/
+        statistics::Scalar intReturned;
+        /** Number of registers freed and written back to floating point free list*/
+        statistics::Scalar fpReturned;
     } stats;
 };
 

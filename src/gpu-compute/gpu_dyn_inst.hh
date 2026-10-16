@@ -36,6 +36,7 @@
 #include <memory>
 #include <string>
 
+#include "arch/amdgpu/common/dtype/packed_types.hh"
 #include "base/amo.hh"
 #include "base/logging.hh"
 #include "base/trace.hh"
@@ -49,6 +50,32 @@ namespace gem5
 {
 
 class GPUStaticInst;
+
+template<typename T>
+class AtomicOpPkAddBF16 : public TypedAtomicOpFunctor<T>
+{
+  public:
+    T data;
+    AtomicOpPkAddBF16(T _data) : data(_data) { }
+
+    void
+    execute([[maybe_unused]] T *b)
+    {
+        if constexpr (sizeof(T) == 4) {
+            AMDGPU::PkBfloat16 pk_b, pk_data;
+            pk_data = data;
+            pk_b = *b;
+
+            pk_b += pk_data;
+
+            *b = pk_b.get();
+        } else {
+            fatal("Attempted packed atomic bf16 on non 32-bit type");
+        }
+    }
+
+    AtomicOpFunctor* clone () { return new AtomicOpPkAddBF16(data); }
+};
 
 template<typename T>
 class AtomicOpCAS : public TypedAtomicOpFunctor<T>
@@ -234,6 +261,7 @@ class GPUDynInst : public GPUExecContext
     bool isMemRef() const;
     bool isFlat() const;
     bool isFlatGlobal() const;
+    bool isFlatScratch() const;
     bool isLoad() const;
     bool isStore() const;
 
@@ -256,6 +284,7 @@ class GPUDynInst : public GPUExecContext
     bool writesFlatScratch() const;
     bool readsExecMask() const;
     bool writesExecMask() const;
+    bool needsToken() const;
 
     bool isAtomicAnd() const;
     bool isAtomicOr() const;
@@ -268,6 +297,7 @@ class GPUDynInst : public GPUExecContext
     bool isAtomicDec() const;
     bool isAtomicMax() const;
     bool isAtomicMin() const;
+    bool isAtomicPkAddBF16() const;
 
     bool isArgLoad() const;
     bool isGlobalMem() const;
@@ -284,6 +314,7 @@ class GPUDynInst : public GPUExecContext
     bool isGloballyCoherent() const;
     bool isSystemCoherent() const;
 
+    bool isI8() const;
     bool isF16() const;
     bool isF32() const;
     bool isF64() const;
@@ -291,6 +322,7 @@ class GPUDynInst : public GPUExecContext
     bool isFMA() const;
     bool isMAC() const;
     bool isMAD() const;
+    bool isMFMA() const;
 
     // for FLAT memory ops. check the segment address
     // against the APE registers to see if it falls
@@ -326,6 +358,8 @@ class GPUDynInst : public GPUExecContext
             return std::make_unique<AtomicOpMax<c0>>(*reg0);
         } else if (isAtomicMin()) {
             return std::make_unique<AtomicOpMin<c0>>(*reg0);
+        } else if (isAtomicPkAddBF16()) {
+            return std::make_unique<AtomicOpPkAddBF16<c0>>(*reg0);
         } else {
             fatal("Unrecognized atomic operation");
         }
@@ -380,9 +414,10 @@ class GPUDynInst : public GPUExecContext
     void
     setStatusVector(int lane, int newVal)
     {
-        // currently we can have up to 2 memory requests per lane (if the
-        // lane's request goes across multiple cache lines)
-        assert((newVal >= 0) && (newVal <= 2));
+        // Currently we can have up to 4 memory requests per lane. This can
+        // occur on a memory request loading 4x dwords where the memory is
+        // swizzled.
+        assert((newVal >= 0) && (newVal <= 4));
         statusVector[lane] = newVal;
     }
 

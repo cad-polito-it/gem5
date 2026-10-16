@@ -90,13 +90,14 @@ class MessageBuffer : public SimObject
     Tick readyTime() const;
 
     void
-    delayHead(Tick current_time, Tick delta)
+    delayHead(Tick current_time, Tick delta, bool ruby_is_random,
+              bool ruby_warmup)
     {
         MsgPtr m = m_prio_heap.front();
         std::pop_heap(m_prio_heap.begin(), m_prio_heap.end(),
                       std::greater<MsgPtr>());
         m_prio_heap.pop_back();
-        enqueue(m, current_time, delta);
+        enqueue(m, current_time, delta, ruby_is_random, ruby_warmup);
     }
 
     bool areNSlotsAvailable(unsigned int n, Tick curTime);
@@ -123,7 +124,9 @@ class MessageBuffer : public SimObject
 
     const MsgPtr &peekMsgPtr() const { return m_prio_heap.front(); }
 
-    void enqueue(MsgPtr message, Tick curTime, Tick delta);
+    void enqueue(MsgPtr message, Tick curTime, Tick delta,
+                bool ruby_is_random, bool ruby_warmup,
+                bool bypassStrictFIFO = false);
 
     // Defer enqueueing a message to a later cycle by putting it aside and not
     // enqueueing it in this cycle
@@ -134,7 +137,8 @@ class MessageBuffer : public SimObject
 
     // enqueue all previously deferred messages that are associated with the
     // input address
-    void enqueueDeferredMessages(Addr addr, Tick curTime, Tick delay);
+    void enqueueDeferredMessages(Addr addr, Tick curTime, Tick delay,
+                                 bool ruby_is_random, bool ruby_warmup);
     bool isDeferredMsgMapEmpty(Addr addr) const;
 
     //! Updates the delay cycles of the message at the head of the queue,
@@ -271,6 +275,9 @@ class MessageBuffer : public SimObject
 
     uint64_t m_msg_counter;
     int m_priority_rank;
+
+    bool m_last_message_strict_fifo_bypassed;
+
     const bool m_strict_fifo;
     const MessageRandomization m_randomization;
     const bool m_allow_zero_latency;

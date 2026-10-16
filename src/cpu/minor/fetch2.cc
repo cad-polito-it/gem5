@@ -52,7 +52,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Minor, minor);
 namespace minor
 {
 
@@ -203,6 +202,8 @@ Fetch2::predictBranch(MinorDynInstPtr inst, BranchData &branch)
         inst->triedToPredict = true;
 
         DPRINTF(Branch, "Trying to predict for inst: %s\n", *inst);
+
+        cpu.fetchStats[inst->id.threadId]->numBranches++;
 
         if (branchPredictor.predict(inst->staticInst,
                     inst->id.fetchSeqNum, *inst_pc, inst->id.threadId)) {
@@ -700,6 +701,9 @@ Fetch2::evaluate()
                     else if (decoded_inst->isInteger())
                         stats.intInstructions++;
 
+                    stats.totalInstructions++;
+                    cpu.fetchStats[tid]->numInsts++;
+
                     DPRINTF(Fetch, "Instruction extracted from line %s"
                         " lineWidth: %d output_index: %d inputIndex: %d"
                         " pc: %s inst: %s\n",
@@ -829,7 +833,9 @@ Fetch2::isDrained()
 }
 
 Fetch2::Fetch2Stats::Fetch2Stats(MinorCPU *cpu)
-      : statistics::Group(cpu, "fetch2"),
+    : statistics::Group(cpu, "fetch2"),
+      ADD_STAT(totalInstructions, statistics::units::Count::get(),
+               "Total number of instructions successfully decoded"),
       ADD_STAT(intInstructions, statistics::units::Count::get(),
                "Number of integer instructions successfully decoded"),
       ADD_STAT(fpInstructions, statistics::units::Count::get(),
@@ -843,18 +849,13 @@ Fetch2::Fetch2Stats::Fetch2Stats(MinorCPU *cpu)
       ADD_STAT(amoInstructions, statistics::units::Count::get(),
                "Number of memory atomic instructions successfully decoded")
 {
-        intInstructions
-            .flags(statistics::total);
-        fpInstructions
-            .flags(statistics::total);
-        vecInstructions
-            .flags(statistics::total);
-        loadInstructions
-            .flags(statistics::total);
-        storeInstructions
-            .flags(statistics::total);
-        amoInstructions
-            .flags(statistics::total);
+    totalInstructions.flags(statistics::total);
+    intInstructions.flags(statistics::total);
+    fpInstructions.flags(statistics::total);
+    vecInstructions.flags(statistics::total);
+    loadInstructions.flags(statistics::total);
+    storeInstructions.flags(statistics::total);
+    amoInstructions.flags(statistics::total);
 }
 
 void

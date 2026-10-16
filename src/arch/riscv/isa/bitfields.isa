@@ -3,6 +3,7 @@
 // Copyright (c) 2015 RISC-V Foundation
 // Copyright (c) 2016 The University of Virginia
 // Copyright (c) 2020 Barkhausen Institut
+// Copyright (c) 2022 Google LLC
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -32,12 +33,14 @@
 //
 // Bitfield definitions.
 //
+def bitfield RVTYPE rv_type;
+def bitfield ENABLE_ZCD enable_zcd;
 
 def bitfield QUADRANT <1:0>;
-def bitfield OPCODE <6:2>;
+def bitfield OPCODE5 <6:2>;
 
 // R-Type
-def bitfield ALL	<31:0>;
+def bitfield ALL    <31:0>;
 def bitfield RD     <11:7>;
 def bitfield FUNCT3 <14:12>;
 def bitfield RS1    <19:15>;
@@ -48,6 +51,7 @@ def bitfield FUNCT7 <31:25>;
 def bitfield SRTYPE <30>;
 def bitfield SHAMT5 <24:20>;
 def bitfield SHAMT6 <25:20>;
+def bitfield SHAMT6BIT5 <25>;
 
 // I-Type
 def bitfield IMM12  <31:20>;
@@ -95,13 +99,19 @@ def bitfield RL <25>;
 
 // Compressed
 def bitfield COPCODE <15:13>;
+def bitfield CFUNCT6LOW3 <12:10>;
 def bitfield CFUNCT1 <12>;
+def bitfield CFUNCT1BIT6 <6>;
 def bitfield CFUNCT2HIGH <11:10>;
 def bitfield CFUNCT2LOW <6:5>;
+def bitfield CFUNCT2MID <9:8>;
+def bitfield JTINDEX5TO7 <9:7>;
 def bitfield RC1 <11:7>;
 def bitfield RC2 <6:2>;
 def bitfield RP1 <9:7>;
 def bitfield RP2 <4:2>;
+def bitfield R1S <9:7>;
+def bitfield R2S <4:2>;
 def bitfield FC1 <11:7>;
 def bitfield FC2 <6:2>;
 def bitfield FP2 <4:2>;
@@ -126,6 +136,34 @@ def bitfield M5FUNC <31:25>;
 
 // Cryptography instructions
 def bitfield BIT24         <24>;
+def bitfield BIT25         <25>;
 def bitfield RNUM       <23:20>;
 def bitfield KFUNCT5    <29:25>;
 def bitfield BS         <31:30>;
+
+// Vector instructions
+def bitfield VFUNCT6    vfunct6;
+def bitfield VFUNCT5    vfunct5;
+def bitfield VFUNCT3    vfunct3;
+def bitfield VFUNCT2    vfunct2;
+
+def bitfield VS3        vs3;
+def bitfield VS2        vs2;
+def bitfield VS1        vs1;
+def bitfield VD         vd;
+
+def bitfield NF         nf;
+def bitfield MEW        mew;
+def bitfield MOP        mop;
+def bitfield VM         vm;
+def bitfield LUMOP      lumop;
+def bitfield SUMOP      sumop;
+def bitfield WIDTH      width;
+
+def bitfield BIT31      bit31;
+def bitfield BIT30      bit30;
+def bitfield SIMM5      uimm_vsetivli;
+def bitfield SIMM3      simm3;
+
+// Zvbb
+def bitfield BIT26      <26>;

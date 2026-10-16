@@ -38,12 +38,12 @@ def makeDir(path):
     ensure that it is a directory"""
     if os.path.exists(path):
         if not os.path.isdir(path):
-            raise AttributeError("%s exists but is not directory" % path)
+            raise AttributeError(f"{path} exists but is not directory")
     else:
-        os.mkdir(path)
+        os.makedirs(path, exist_ok=True)
 
 
-class SymbolTable(object):
+class SymbolTable:
     def __init__(self, slicc):
         self.slicc = slicc
 
@@ -55,7 +55,7 @@ class SymbolTable(object):
         pairs["primitive"] = "yes"
         pairs["external"] = "yes"
         location = Location("init", 0, no_warning=not slicc.verbose)
-        void = Type(self, "void", location, pairs)
+        void = Type(self, "void", location, pairs, shared=False)
         self.newSymbol(void)
 
     def __repr__(self):
@@ -124,7 +124,7 @@ class SymbolTable(object):
     def registerGlobalSym(self, ident, symbol):
         # Check for redeclaration (global frame only)
         if ident in self.sym_map_vec[0]:
-            symbol.error("Symbol '%s' redeclared in global scope." % ident)
+            symbol.error(f"Symbol '{ident}' redeclared in global scope.")
 
         self.sym_map_vec[0][ident] = symbol
 
@@ -136,26 +136,91 @@ class SymbolTable(object):
     def writeCodeFiles(self, path, includes):
         makeDir(path)
 
-        code = self.codeFormatter()
+        # Note: This will be None if generated only the shared code.
+        if self.slicc.protocol:
+            makeDir(os.path.join(path, self.slicc.protocol))
 
-        for include_path in includes:
-            code('#include "${{include_path}}"')
+            code = self.codeFormatter()
 
-        for symbol in self.sym_vec:
-            if isinstance(symbol, Type) and not symbol.isPrimitive:
-                code('#include "mem/ruby/protocol/${{symbol.c_ident}}.hh"')
+            for include_path in includes:
+                code('#include "${{include_path}}"')
 
-        code.write(path, "Types.hh")
+            for symbol in self.sym_vec:
+                if isinstance(symbol, Type) and not symbol.isPrimitive:
+                    ident = symbol.c_ident
+                    if not symbol.shared and not symbol.isExternal:
+                        ident = f"{self.slicc.protocol}/{ident}"
+                    code('#include "mem/ruby/protocol/${{ident}}.hh"')
+
+            code(
+                f'#include "mem/ruby/protocol/{self.slicc.protocol}/{self.slicc.protocol}ProtocolInfo.hh"'
+            )
+            code.write(path, f"{self.slicc.protocol}/Types.hh")
+
+            self.writeProtocolInfo(path)
 
         for symbol in self.sym_vec:
             symbol.writeCodeFiles(path, includes)
 
+    def writeProtocolInfo(self, path):
+        code = self.codeFormatter()
+        code(
+            f"""
+#ifndef __MEM_RUBY_PROTOCOL_{self.slicc.protocol}_{self.slicc.protocol}PROTOCOL_INFO_HH__
+#define __MEM_RUBY_PROTOCOL_{self.slicc.protocol}_{self.slicc.protocol}PROTOCOL_INFO_HH__
+
+#include "mem/ruby/slicc_interface/ProtocolInfo.hh"
+
+namespace gem5
+{{
+
+namespace ruby
+{{
+
+namespace {self.slicc.protocol}
+{{
+
+class {self.slicc.protocol}ProtocolInfo : public ProtocolInfo
+{{
+  public:
+      {self.slicc.protocol}ProtocolInfo() :
+          ProtocolInfo("{self.slicc.protocol}",
+"""
+        )
+        options = ",\n".join(
+            [
+                f"                       {'true' if value else 'false'}"
+                for _, value in self.slicc.options.items()
+            ]
+        )
+        code(options)
+        code(
+            f"""          )
+      {{
+      }}
+}};
+
+}}
+}}
+}}
+
+#endif // __MEM_RUBY_PROTOCOL_{self.slicc.protocol}_{self.slicc.protocol}PROTOCOL_INFO_HH__
+"""
+        )
+        code.write(
+            path, f"{self.slicc.protocol}/{self.slicc.protocol}ProtocolInfo.hh"
+        )
+
     def writeHTMLFiles(self, path):
+        makeDir(path)
+
+        # Append the protocol to the path and make that directory
+        path = os.path.join(path, self.slicc.protocol)
         makeDir(path)
 
         machines = list(self.getAllType(StateMachine))
         if len(machines) > 1:
-            name = "%s_table.html" % machines[0].ident
+            name = f"{machines[0].ident}_table.html"
         else:
             name = "empty.html"
 

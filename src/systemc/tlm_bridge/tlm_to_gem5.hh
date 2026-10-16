@@ -109,7 +109,7 @@ class TlmToGem5Bridge : public TlmToGem5BridgeBase
       public:
         BridgeRequestPort(const std::string &name_,
                          TlmToGem5Bridge<BITWIDTH> &bridge_) :
-            RequestPort(name_, nullptr), bridge(bridge_)
+            RequestPort(name_), bridge(bridge_)
         {}
     };
 
@@ -142,6 +142,8 @@ class TlmToGem5Bridge : public TlmToGem5BridgeBase
     void destroyPacket(gem5::PacketPtr pkt);
 
     void invalidateDmi(const gem5::MemBackdoor &backdoor);
+
+    void cacheBackdoor(gem5::MemBackdoorPtr backdoor);
 
   protected:
     // payload event call back

@@ -26,10 +26,20 @@
 
 
 from typing import Optional
+
+from m5.objects import (
+    GUPSGen,
+    SrcClockDomain,
+    VoltageDomain,
+)
+from m5.params import (
+    Addr,
+    Port,
+)
+
 from ...utils.override import overrides
 from .abstract_core import AbstractCore
 from .abstract_generator_core import AbstractGeneratorCore
-from m5.objects import Port, GUPSGen, Addr, SrcClockDomain, VoltageDomain
 
 
 class GUPSGeneratorCore(AbstractGeneratorCore):

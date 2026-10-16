@@ -29,10 +29,10 @@
 # NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 # SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import os
+
 import m5
 from m5.objects import *
-
-import os
 
 # Base System Architecture:
 #         +-----+           ^
@@ -51,7 +51,7 @@ import os
 # Create a system with a Crossbar and a simple Memory:
 system = System()
 system.membus = IOXBar(width=16)
-system.physmem = SimpleMemory(range=AddrRange("512MB"))
+system.physmem = SimpleMemory(range=AddrRange("512MiB"))
 system.clk_domain = SrcClockDomain(
     clock="1.5GHz", voltage_domain=VoltageDomain(voltage="1V")
 )

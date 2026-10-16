@@ -36,6 +36,7 @@
 from m5.params import *
 from m5.SimObject import SimObject
 
+
 # An address mapper changes the packet addresses in going from the
 # response port side of the mapper to the request port side. When the
 # response port is queried for the address ranges, it also performs the
@@ -50,16 +51,10 @@ class AddrMapper(SimObject):
 
     # one port in each direction
     mem_side_port = RequestPort(
-        "This port sends requests and " "receives responses"
-    )
-    master = DeprecatedParam(
-        mem_side_port, "`master` is now called `mem_side_port`"
+        "This port sends requests and receives responses"
     )
     cpu_side_port = ResponsePort(
-        "This port receives requests and " "sends responses"
-    )
-    slave = DeprecatedParam(
-        cpu_side_port, "`slave` is now called `cpu_side_port`"
+        "This port receives requests and sends responses"
     )
 
 

@@ -157,6 +157,27 @@ TEST_F(LoggingFixture, DisabledPrint)
     ASSERT_EQ(gtestLogOutput.str(), "");
 }
 
+/** Test print with extra logs. */
+TEST_F(LoggingFixture, PrintWithExtraLogs)
+{
+    Logger logger("test: ");
+
+    logger.registerExtraLog([]() { return "Extra log 1\n"; });
+
+    gtestLogOutput.str("");
+    logger.print(Logger::Loc("File", 10), "message");
+    ASSERT_EQ(gtestLogOutput.str(), "File:10: test: message\nExtra log 1\n");
+
+    logger.registerExtraLog([]() { return "Extra log 2"; });
+    logger.registerExtraLog([]() { return "Extra log 3"; });
+
+    gtestLogOutput.str("");
+    logger.print(Logger::Loc("File", 10), "message");
+    ASSERT_EQ(
+        gtestLogOutput.str(),
+        "File:10: test: message\nExtra log 1\nExtra log 2\nExtra log 3\n");
+}
+
 /** Test printing with the warn logger, enabled and disabled. */
 TEST_F(LoggingFixture, WarnLoggerPrint)
 {
@@ -553,6 +574,9 @@ TEST(LoggingDeathTest, gem5Assert)
     gem5_assert(true, "message\n");
     ASSERT_DEATH(gem5_assert(false, "message\n"), ::testing::HasSubstr(
         "panic: assert(false) failed: message\nMemory Usage:"));
+    ASSERT_DEATH(gem5_assert(false, "%s, %s!\n", "Hello", "World"),
+        ::testing::HasSubstr(
+        "panic: assert(false) failed: Hello, World!\nMemory Usage:"));
     gem5_assert(true);
     ASSERT_DEATH(gem5_assert(false), ::testing::HasSubstr(
         "panic: assert(false) failed\nMemory Usage:"));

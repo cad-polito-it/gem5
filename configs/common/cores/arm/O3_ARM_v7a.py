@@ -1,3 +1,15 @@
+# Copyright (c) 2025 Arm Limited
+# All rights reserved
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
 # Copyright (c) 2012 The Regents of The University of Michigan
 # All rights reserved.
 #
@@ -26,6 +38,7 @@
 
 from m5.objects import *
 
+
 # Simple ALU Instructions have a latency of 1
 class O3_ARM_v7a_Simple_Int(FUDesc):
     opList = [OpDesc(opClass="IntAlu", opLat=1)]
@@ -37,7 +50,7 @@ class O3_ARM_v7a_Complex_Int(FUDesc):
     opList = [
         OpDesc(opClass="IntMult", opLat=3, pipelined=True),
         OpDesc(opClass="IntDiv", opLat=12, pipelined=False),
-        OpDesc(opClass="IprAccess", opLat=3, pipelined=True),
+        OpDesc(opClass="System", opLat=3, pipelined=True),
     ]
     count = 1
 
@@ -53,6 +66,7 @@ class O3_ARM_v7a_FP(FUDesc):
         OpDesc(opClass="SimdMisc", opLat=3),
         OpDesc(opClass="SimdMult", opLat=5),
         OpDesc(opClass="SimdMultAcc", opLat=5),
+        OpDesc(opClass="SimdMatMultAcc", opLat=5),
         OpDesc(opClass="SimdShift", opLat=3),
         OpDesc(opClass="SimdShiftAcc", opLat=3),
         OpDesc(opClass="SimdSqrt", opLat=9),
@@ -64,7 +78,15 @@ class O3_ARM_v7a_FP(FUDesc):
         OpDesc(opClass="SimdFloatMisc", opLat=3),
         OpDesc(opClass="SimdFloatMult", opLat=3),
         OpDesc(opClass="SimdFloatMultAcc", opLat=5),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=5),
         OpDesc(opClass="SimdFloatSqrt", opLat=9),
+        OpDesc(opClass="SimdBf16Add", opLat=4),
+        OpDesc(opClass="SimdBf16Cmp", opLat=4),
+        OpDesc(opClass="SimdBf16Cvt", opLat=3),
+        OpDesc(opClass="SimdBf16DotProd", opLat=4),
+        OpDesc(opClass="SimdBf16MatMultAcc", opLat=5),
+        OpDesc(opClass="SimdBf16Mult", opLat=3),
+        OpDesc(opClass="SimdBf16MultAcc", opLat=4),
         OpDesc(opClass="FloatAdd", opLat=5),
         OpDesc(opClass="FloatCmp", opLat=5),
         OpDesc(opClass="FloatCvt", opLat=5),
@@ -73,6 +95,7 @@ class O3_ARM_v7a_FP(FUDesc):
         OpDesc(opClass="FloatMult", opLat=4),
         OpDesc(opClass="FloatMultAcc", opLat=5),
         OpDesc(opClass="FloatMisc", opLat=3),
+        OpDesc(opClass="Bf16Cvt", opLat=3),
     ]
     count = 2
 
@@ -105,16 +128,36 @@ class O3_ARM_v7a_FUP(FUPool):
     ]
 
 
-# Bi-Mode Branch Predictor
-class O3_ARM_v7a_BP(BiModeBP):
-    globalPredictorSize = 8192
-    globalCtrBits = 2
-    choicePredictorSize = 8192
-    choiceCtrBits = 2
-    BTBEntries = 2048
-    BTBTagSize = 18
-    RASSize = 16
+class O3_ARM_v7a_BTB(SimpleBTB):
+    numEntries = 2048
+    tagBits = 18
+    associativity = 1
     instShiftAmt = 2
+    btbReplPolicy = LRURP()
+    btbIndexingPolicy = BTBSetAssociative(
+        num_entries=Parent.numEntries,
+        set_shift=Parent.instShiftAmt,
+        assoc=Parent.associativity,
+        tag_bits=Parent.tagBits,
+    )
+
+
+# Bi-Mode Branch Predictor
+class O3_ARM_v7a_BP(BranchPredictor):
+    conditionalBranchPred = BiModeBP(
+        globalPredictorSize=8192,
+        globalCtrBits=2,
+        choicePredictorSize=8192,
+        choiceCtrBits=2,
+    )
+    btb = O3_ARM_v7a_BTB()
+    ras = ReturnAddrStack(numEntries=16)
+    instShiftAmt = 2
+
+
+class O3_ARM_v7a_IQ(IQUnit):
+    fuPool = O3_ARM_v7a_FUP()
+    numEntries = 32
 
 
 class O3_ARM_v7a_3(ArmO3CPU):
@@ -122,7 +165,7 @@ class O3_ARM_v7a_3(ArmO3CPU):
     SQEntries = 16
     LSQDepCheckShift = 0
     LFSTSize = 1024
-    SSITSize = 1024
+    SSITSize = "1024"
     decodeToFetchDelay = 1
     renameToFetchDelay = 1
     iewToFetchDelay = 1
@@ -144,7 +187,6 @@ class O3_ARM_v7a_3(ArmO3CPU):
     dispatchWidth = 6
     issueWidth = 8
     wbWidth = 8
-    fuPool = O3_ARM_v7a_FUP()
     iewToCommitDelay = 1
     renameToROBDelay = 1
     commitWidth = 8
@@ -155,11 +197,11 @@ class O3_ARM_v7a_3(ArmO3CPU):
     numPhysIntRegs = 128
     numPhysFloatRegs = 192
     numPhysVecRegs = 48
-    numIQEntries = 32
     numROBEntries = 40
 
     switched_out = False
     branchPred = O3_ARM_v7a_BP()
+    instQueues = O3_ARM_v7a_IQ()
 
 
 # Instruction Cache
@@ -169,7 +211,7 @@ class O3_ARM_v7a_ICache(Cache):
     response_latency = 1
     mshrs = 2
     tgts_per_mshr = 8
-    size = "32kB"
+    size = "32KiB"
     assoc = 2
     is_read_only = True
     # Writeback clean lines as well
@@ -183,7 +225,7 @@ class O3_ARM_v7a_DCache(Cache):
     response_latency = 2
     mshrs = 6
     tgts_per_mshr = 8
-    size = "32kB"
+    size = "32KiB"
     assoc = 2
     write_buffers = 16
     # Consider the L2 a victim cache also for clean lines
@@ -197,12 +239,11 @@ class O3_ARM_v7aL2(Cache):
     response_latency = 12
     mshrs = 16
     tgts_per_mshr = 8
-    size = "1MB"
+    size = "1MiB"
     assoc = 16
     write_buffers = 8
-    prefetch_on_access = True
     clusivity = "mostly_excl"
     # Simple stride prefetcher
-    prefetcher = StridePrefetcher(degree=8, latency=1)
+    prefetcher = StridePrefetcher(degree=8, latency=1, prefetch_on_access=True)
     tags = BaseSetAssoc()
     replacement_policy = RandomRP()

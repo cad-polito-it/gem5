@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2013,2017-2019, 2021-2022 Arm Limited
+ * Copyright (c) 2011-2013,2017-2019, 2021-2022, 2024 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -39,6 +39,9 @@
 #define __ARCH_ARM_INSTS_MISC64_HH__
 
 #include "arch/arm/insts/static_inst.hh"
+#include "arch/arm/mmu.hh"
+#include "arch/arm/tlbi_op.hh"
+#include "arch/arm/types.hh"
 
 namespace gem5
 {
@@ -51,6 +54,38 @@ class ImmOp64 : public ArmISA::ArmStaticInst
     ImmOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
             OpClass __opClass, uint64_t _imm) :
         ArmISA::ArmStaticInst(mnem, _machInst, __opClass), imm(_imm)
+    {}
+
+    std::string generateDisassembly(
+            Addr pc, const loader::SymbolTable *symtab) const override;
+};
+
+class RegOp64 : public ArmISA::ArmStaticInst
+{
+  protected:
+    RegIndex op1;
+
+    RegOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
+            OpClass __opClass, RegIndex _op1) :
+        ArmISA::ArmStaticInst(mnem, _machInst, __opClass), op1(_op1)
+    {}
+
+    std::string generateDisassembly(
+            Addr pc, const loader::SymbolTable *symtab) const override;
+};
+
+class RegImmImmOp64 : public ArmISA::ArmStaticInst
+{
+  protected:
+    RegIndex op1;
+    uint64_t imm1;
+    uint64_t imm2;
+
+    RegImmImmOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
+                  OpClass __opClass, RegIndex _op1,
+                  uint64_t _imm1, uint64_t _imm2) :
+        ArmISA::ArmStaticInst(mnem, _machInst, __opClass),
+        op1(_op1), imm1(_imm1), imm2(_imm2)
     {}
 
     std::string generateDisassembly(
@@ -140,9 +175,8 @@ class MiscRegOp64 : public ArmISA::ArmStaticInst
 
     bool miscRead() const { return _miscRead; }
 
+    using ArmISA::ArmStaticInst::generateTrap;
     Fault generateTrap(ArmISA::ExceptionLevel el) const;
-    Fault generateTrap(ArmISA::ExceptionLevel el,
-            ArmISA::ExceptionClass ec, uint32_t iss) const;
 };
 
 class MiscRegImmOp64 : public MiscRegOp64
@@ -252,6 +286,50 @@ class RegNone : public ArmISA::ArmStaticInst
 class TlbiOp64 : public MiscRegRegImmOp64
 {
   protected:
+    using TlbiFunc = std::function<void(ThreadContext*,RegVal)>;
+    using TlbiAttr = ArmISA::TLBIOp::Attr;
+
+    static std::unordered_map<ArmISA::MiscRegIndex, TlbiFunc> tlbiOps;
+
+    static void tlbiAll(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiVmall(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, bool stage2=false, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiVa(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, bool last_level, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiVaa(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, bool last_level, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiAsid(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiIpaS2(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, bool last_level, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiRvaa(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, bool last_level, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiRva(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable,  bool last_level, TlbiAttr attrs=TlbiAttr::None);
+
+    static void tlbiRipaS2(ThreadContext *tc, RegVal value,
+        ArmISA::SecurityState ss, ArmISA::TranslationRegime regime,
+        bool shareable, bool last_level, TlbiAttr attrs=TlbiAttr::None);
+
+    static bool fnxsAttrs(ThreadContext *tc);
+
+  protected:
     TlbiOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
              OpClass __opClass, ArmISA::MiscRegIndex _dest,
              RegIndex _op1) :
@@ -260,6 +338,51 @@ class TlbiOp64 : public MiscRegRegImmOp64
 
     void performTlbi(ExecContext *xc,
                      ArmISA::MiscRegIndex idx, RegVal value) const;
+};
+
+class AtOp64 : public MiscRegRegImmOp64
+{
+  protected:
+    AtOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
+             OpClass __opClass, ArmISA::MiscRegIndex _dest,
+             RegIndex _op1) :
+        MiscRegRegImmOp64(mnem, _machInst, __opClass, _dest, _op1)
+    {}
+
+    std::pair<Fault, uint64_t> performAt(ExecContext *xc,
+        ArmISA::MiscRegIndex idx, RegVal val) const;
+
+    std::pair<Fault, uint64_t> addressTranslation64(ThreadContext* tc,
+        ArmISA::MMU::ArmTranslationType tran_type,
+        BaseMMU::Mode mode, Request::Flags flags, RegVal val) const;
+};
+
+class IsbOp64 : public ArmISA::ArmStaticInst
+{
+  protected:
+    uint64_t imm;
+
+    IsbOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
+            OpClass __opClass, uint64_t _imm) :
+        ArmISA::ArmStaticInst(mnem, _machInst, __opClass), imm(_imm)
+    {}
+
+    std::string generateDisassembly(
+            Addr pc, const loader::SymbolTable *symtab) const override;
+};
+
+class DsbOp64 : public ArmISA::ArmStaticInst
+{
+  protected:
+    uint64_t imm;
+
+    DsbOp64(const char *mnem, ArmISA::ExtMachInst _machInst,
+            OpClass __opClass, uint64_t _imm) :
+        ArmISA::ArmStaticInst(mnem, _machInst, __opClass), imm(_imm)
+    {}
+
+    std::string generateDisassembly(
+            Addr pc, const loader::SymbolTable *symtab) const override;
 };
 
 } // namespace gem5

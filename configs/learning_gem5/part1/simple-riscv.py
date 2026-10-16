@@ -39,7 +39,7 @@ system.clk_domain.clock = "1GHz"
 system.clk_domain.voltage_domain = VoltageDomain()
 
 system.mem_mode = "timing"
-system.mem_ranges = [AddrRange("512MB")]
+system.mem_ranges = [AddrRange("512MiB")]
 system.cpu = RiscvTimingSimpleCPU()
 
 system.membus = SystemXBar()
@@ -73,6 +73,6 @@ system.cpu.createThreads()
 root = Root(full_system=False, system=system)
 m5.instantiate()
 
-print("Beginning simulation!")
+print(f"Beginning simulation!")
 exit_event = m5.simulate()
-print("Exiting @ tick %i because %s" % (m5.curTick(), exit_event.getCause()))
+print(f"Exiting @ tick {m5.curTick()} because {exit_event.getCause()}")

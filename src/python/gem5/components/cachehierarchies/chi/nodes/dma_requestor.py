@@ -24,12 +24,17 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from gem5.components.processors.abstract_core import AbstractCore
-from gem5.isas import ISA
+from m5.objects import (
+    ClockDomain,
+    RubyCache,
+)
+from m5.params import (
+    NULL,
+)
 
+from .....isas import ISA
+from ....processors.abstract_core import AbstractCore
 from .abstract_node import AbstractNode
-
-from m5.objects import ClockDomain, RubyCache
 
 
 class DMARequestor(AbstractNode):
@@ -56,6 +61,7 @@ class DMARequestor(AbstractNode):
         self.alloc_on_readunique = False
         self.alloc_on_readonce = False
         self.alloc_on_writeback = False
+        self.alloc_on_atomic = False
         self.dealloc_on_unique = False
         self.dealloc_on_shared = False
         self.dealloc_backinv_unique = True
@@ -63,6 +69,7 @@ class DMARequestor(AbstractNode):
 
         self.send_evictions = False
         self.use_prefetcher = False
+        self.prefetcher = NULL
         # Some reasonable default TBE params
         self.number_of_TBEs = 16
         self.number_of_repl_TBEs = 1

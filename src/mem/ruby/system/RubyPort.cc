@@ -41,12 +41,9 @@
 
 #include "mem/ruby/system/RubyPort.hh"
 
-#include "base/compiler.hh"
-#include "cpu/testers/rubytest/RubyTester.hh"
 #include "debug/Config.hh"
 #include "debug/Drain.hh"
-#include "debug/Ruby.hh"
-#include "mem/ruby/protocol/AccessPermission.hh"
+#include "debug/RubyPort.hh"
 #include "mem/ruby/slicc_interface/AbstractController.hh"
 #include "mem/simple_mem.hh"
 #include "sim/full_system.hh"
@@ -62,10 +59,10 @@ RubyPort::RubyPort(const Params &p)
     : ClockedObject(p), m_ruby_system(p.ruby_system), m_version(p.version),
       m_controller(NULL), m_mandatory_q_ptr(NULL),
       m_usingRubyTester(p.using_ruby_tester), system(p.system),
-      pioRequestPort(csprintf("%s.pio-request-port", name()), this),
-      pioResponsePort(csprintf("%s.pio-response-port", name()), this),
-      memRequestPort(csprintf("%s.mem-request-port", name()), this),
-      memResponsePort(csprintf("%s-mem-response-port", name()), this,
+      pioRequestPort(csprintf("%s.pio-request-port", name()), *this),
+      pioResponsePort(csprintf("%s.pio-response-port", name()), *this),
+      memRequestPort(csprintf("%s.mem-request-port", name()), *this),
+      memResponsePort(csprintf("%s-mem-response-port", name()), *this,
                    p.ruby_system->getAccessBackingStore(), -1,
                    p.no_retry_on_stall),
       gotAddrRanges(p.port_interrupt_out_port_connection_count),
@@ -76,7 +73,7 @@ RubyPort::RubyPort(const Params &p)
     // create the response ports based on the number of connected ports
     for (size_t i = 0; i < p.port_in_ports_connection_count; ++i) {
         response_ports.push_back(new MemResponsePort(csprintf
-            ("%s.response_ports%d", name(), i), this,
+            ("%s.response_ports%d", name(), i), *this,
             p.ruby_system->getAccessBackingStore(),
             i, p.no_retry_on_stall));
     }
@@ -84,7 +81,7 @@ RubyPort::RubyPort(const Params &p)
     // create the request ports based on the number of connected ports
     for (size_t i = 0; i < p.port_interrupt_out_port_connection_count; ++i) {
         request_ports.push_back(new PioRequestPort(csprintf(
-                    "%s.request_ports%d", name(), i), this));
+                    "%s.request_ports%d", name(), i), *this));
     }
 }
 
@@ -134,35 +131,41 @@ RubyPort::getPort(const std::string &if_name, PortID idx)
 }
 
 RubyPort::PioRequestPort::PioRequestPort(const std::string &_name,
-                           RubyPort *_port)
-    : QueuedRequestPort(_name, _port, reqQueue, snoopRespQueue),
-      reqQueue(*_port, *this), snoopRespQueue(*_port, *this)
+                                         RubyPort& _port) :
+    QueuedRequestPort(_name, reqQueue, snoopRespQueue),
+    owner{_port},
+    reqQueue(_port, *this),
+    snoopRespQueue(_port, *this)
 {
     DPRINTF(RubyPort, "Created request pioport on sequencer %s\n", _name);
 }
 
 RubyPort::PioResponsePort::PioResponsePort(const std::string &_name,
-                           RubyPort *_port)
-    : QueuedResponsePort(_name, _port, queue), queue(*_port, *this)
+                                           RubyPort& _port)
+    : QueuedResponsePort(_name, queue), owner{_port}, queue(_port, *this)
 {
     DPRINTF(RubyPort, "Created response pioport on sequencer %s\n", _name);
 }
 
 RubyPort::MemRequestPort::MemRequestPort(const std::string &_name,
-                           RubyPort *_port)
-    : QueuedRequestPort(_name, _port, reqQueue, snoopRespQueue),
-      reqQueue(*_port, *this), snoopRespQueue(*_port, *this)
+                                         RubyPort& _port):
+    QueuedRequestPort(_name, reqQueue, snoopRespQueue),
+    owner{_port},
+    reqQueue(_port, *this),
+    snoopRespQueue(_port, *this)
 {
     DPRINTF(RubyPort, "Created request memport on ruby sequencer %s\n", _name);
 }
 
 RubyPort::
-MemResponsePort::MemResponsePort(const std::string &_name, RubyPort *_port,
-                                     bool _access_backing_store, PortID id,
-                                     bool _no_retry_on_stall)
-    : QueuedResponsePort(_name, _port, queue, id), queue(*_port, *this),
-      access_backing_store(_access_backing_store),
-      no_retry_on_stall(_no_retry_on_stall)
+MemResponsePort::MemResponsePort(const std::string &_name, RubyPort& _port,
+                                 bool _access_backing_store, PortID id,
+                                 bool _no_retry_on_stall):
+    QueuedResponsePort(_name, queue, id),
+    owner{_port},
+    queue(_port, *this),
+    access_backing_store(_access_backing_store),
+    no_retry_on_stall(_no_retry_on_stall)
 {
     DPRINTF(RubyPort, "Created response memport on ruby sequencer %s\n",
             _name);
@@ -171,12 +174,11 @@ MemResponsePort::MemResponsePort(const std::string &_name, RubyPort *_port,
 bool
 RubyPort::PioRequestPort::recvTimingResp(PacketPtr pkt)
 {
-    RubyPort *rp = static_cast<RubyPort *>(&owner);
     DPRINTF(RubyPort, "Response for address: 0x%#x\n", pkt->getAddr());
 
     // send next cycle
-    rp->pioResponsePort.schedTimingResp(
-            pkt, curTick() + rp->m_ruby_system->clockPeriod());
+    owner.pioResponsePort.schedTimingResp(
+            pkt, curTick() + owner.m_ruby_system->clockPeriod());
     return true;
 }
 
@@ -199,8 +201,7 @@ bool RubyPort::MemRequestPort::recvTimingResp(PacketPtr pkt)
             pkt->getAddr(), port->name());
 
     // attempt to send the response in the next cycle
-    RubyPort *rp = static_cast<RubyPort *>(&owner);
-    port->schedTimingResp(pkt, curTick() + rp->m_ruby_system->clockPeriod());
+    port->schedTimingResp(pkt, curTick() + owner.m_ruby_system->clockPeriod());
 
     return true;
 }
@@ -208,16 +209,15 @@ bool RubyPort::MemRequestPort::recvTimingResp(PacketPtr pkt)
 bool
 RubyPort::PioResponsePort::recvTimingReq(PacketPtr pkt)
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
 
-    for (size_t i = 0; i < ruby_port->request_ports.size(); ++i) {
-        AddrRangeList l = ruby_port->request_ports[i]->getAddrRanges();
+    for (size_t i = 0; i < owner.request_ports.size(); ++i) {
+        AddrRangeList l = owner.request_ports[i]->getAddrRanges();
         for (auto it = l.begin(); it != l.end(); ++it) {
             if (it->contains(pkt->getAddr())) {
                 // generally it is not safe to assume success here as
                 // the port could be blocked
                 [[maybe_unused]] bool success =
-                    ruby_port->request_ports[i]->sendTimingReq(pkt);
+                    owner.request_ports[i]->sendTimingReq(pkt);
                 assert(success);
                 return true;
             }
@@ -229,17 +229,16 @@ RubyPort::PioResponsePort::recvTimingReq(PacketPtr pkt)
 Tick
 RubyPort::PioResponsePort::recvAtomic(PacketPtr pkt)
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
     // Only atomic_noncaching mode supported!
-    if (!ruby_port->system->bypassCaches()) {
+    if (!owner.system->bypassCaches()) {
         panic("Ruby supports atomic accesses only in noncaching mode\n");
     }
 
-    for (size_t i = 0; i < ruby_port->request_ports.size(); ++i) {
-        AddrRangeList l = ruby_port->request_ports[i]->getAddrRanges();
+    for (size_t i = 0; i < owner.request_ports.size(); ++i) {
+        AddrRangeList l = owner.request_ports[i]->getAddrRanges();
         for (auto it = l.begin(); it != l.end(); ++it) {
             if (it->contains(pkt->getAddr())) {
-                return ruby_port->request_ports[i]->sendAtomic(pkt);
+                return owner.request_ports[i]->sendAtomic(pkt);
             }
         }
     }
@@ -251,15 +250,31 @@ RubyPort::MemResponsePort::recvTimingReq(PacketPtr pkt)
 {
     DPRINTF(RubyPort, "Timing request for address %#x on port %d\n",
             pkt->getAddr(), id);
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
 
     if (pkt->cacheResponding())
         panic("RubyPort should never see request with the "
               "cacheResponding flag set\n");
 
+    // For software prefetches, immediately respond to avoid stalling on the
+    // core while still processing the prefetch by passing a copy of the
+    // request through
+    PacketPtr pf = nullptr;
+    if (pkt->cmd.isSWPrefetch()) {
+        RequestPtr req = std::make_shared<Request>(pkt->req->getPaddr(),
+                                                   pkt->req->getSize(),
+                                                   pkt->req->getFlags(),
+                                                   pkt->req->requestorId());
+        pf = pkt;
+        pkt = new Packet(req, pf->cmd);
+        pkt->allocate();
+        assert(pkt->matchAddr(pf));
+        assert(pkt->getSize() == pf->getSize());
+    }
+
     // ruby doesn't support cache maintenance operations at the
     // moment, as a workaround, we respond right away
-    if (pkt->req->isCacheMaintenance()) {
+    if (pkt->req->isCacheMaintenance() &&
+        !owner.m_ruby_system->getProtocolInfo().getSupportsFlushes()) {
         warn_once("Cache maintenance operations are not supported in Ruby.\n");
         pkt->makeResponse();
         schedTimingResp(pkt, curTick());
@@ -267,9 +282,9 @@ RubyPort::MemResponsePort::recvTimingReq(PacketPtr pkt)
     }
     // Check for pio requests and directly send them to the dedicated
     // pio port.
-    if (pkt->cmd != MemCmd::MemSyncReq) {
+    if (pkt->cmd != MemCmd::MemSyncReq && !pkt->req->hasNoAddr()) {
         if (!pkt->req->isMemMgmt() && !isPhysMemAddress(pkt)) {
-            assert(ruby_port->memRequestPort.isConnected());
+            assert(owner.memRequestPort.isConnected());
             DPRINTF(RubyPort, "Request address %#x assumed to be a "
                     "pio address\n", pkt->getAddr());
 
@@ -278,8 +293,8 @@ RubyPort::MemResponsePort::recvTimingReq(PacketPtr pkt)
             pkt->pushSenderState(new SenderState(this));
 
             // send next cycle
-            RubySystem *rs = ruby_port->m_ruby_system;
-            ruby_port->memRequestPort.schedTimingReq(pkt,
+            RubySystem *rs = owner.m_ruby_system;
+            owner.memRequestPort.schedTimingReq(pkt,
                 curTick() + rs->clockPeriod());
             return true;
         }
@@ -290,12 +305,20 @@ RubyPort::MemResponsePort::recvTimingReq(PacketPtr pkt)
     pkt->pushSenderState(new SenderState(this));
 
     // Submit the ruby request
-    RequestStatus requestStatus = ruby_port->makeRequest(pkt);
+    RequestStatus requestStatus = owner.makeRequest(pkt);
 
     // If the request successfully issued then we should return true.
     // Otherwise, we need to tell the port to retry at a later point
     // and return false.
     if (requestStatus == RequestStatus_Issued) {
+        // For software prefetches, only schedule early return if it was
+        // actually issued/aliased by the sequencer
+        if (pkt->cmd.isSWPrefetch()) {
+            assert(pf != nullptr);
+            pf->makeResponse();
+            schedTimingResp(pf, curTick());
+        }
+
         DPRINTF(RubyPort, "Request %s 0x%x issued\n", pkt->cmdString(),
                 pkt->getAddr());
         return true;
@@ -320,17 +343,18 @@ RubyPort::MemResponsePort::recvTimingReq(PacketPtr pkt)
 Tick
 RubyPort::MemResponsePort::recvAtomic(PacketPtr pkt)
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
     // Only atomic_noncaching mode supported!
-    if (!ruby_port->system->bypassCaches()) {
+    if (!owner.system->bypassCaches()) {
         panic("Ruby supports atomic accesses only in noncaching mode\n");
     }
+
+    RubySystem *rs = owner.m_ruby_system;
 
     // Check for pio requests and directly send them to the dedicated
     // pio port.
     if (pkt->cmd != MemCmd::MemSyncReq) {
         if (!isPhysMemAddress(pkt)) {
-            assert(ruby_port->memRequestPort.isConnected());
+            assert(owner.memRequestPort.isConnected());
             DPRINTF(RubyPort, "Request address %#x assumed to be a "
                     "pio address\n", pkt->getAddr());
 
@@ -339,16 +363,15 @@ RubyPort::MemResponsePort::recvAtomic(PacketPtr pkt)
             pkt->pushSenderState(new SenderState(this));
 
             // send next cycle
-            Tick req_ticks = ruby_port->memRequestPort.sendAtomic(pkt);
-            return ruby_port->ticksToCycles(req_ticks);
+            Tick req_ticks = owner.memRequestPort.sendAtomic(pkt);
+            return owner.ticksToCycles(req_ticks);
         }
 
-        assert(getOffset(pkt->getAddr()) + pkt->getSize() <=
-               RubySystem::getBlockSizeBytes());
+        assert(owner.getOffset(pkt->getAddr()) + pkt->getSize() <=
+               rs->getBlockSizeBytes());
     }
 
     // Find the machine type of memory controller interface
-    RubySystem *rs = ruby_port->m_ruby_system;
     static int mem_interface_type = -1;
     if (mem_interface_type == -1) {
         if (rs->m_abstract_controls[MachineType_Directory].size() != 0) {
@@ -363,7 +386,7 @@ RubyPort::MemResponsePort::recvAtomic(PacketPtr pkt)
     }
 
     // Find the controller for the target address
-    MachineID id = ruby_port->m_controller->mapAddressToMachine(
+    MachineID id = owner.m_controller->mapAddressToMachine(
                     pkt->getAddr(), (MachineType)mem_interface_type);
     AbstractController *mem_interface =
         rs->m_abstract_controls[mem_interface_type][id.getNum()];
@@ -376,15 +399,14 @@ RubyPort::MemResponsePort::recvAtomic(PacketPtr pkt)
 void
 RubyPort::MemResponsePort::addToRetryList()
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
 
     //
     // Unless the request port do not want retries (e.g., the Ruby tester),
     // record the stalled M5 port for later retry when the sequencer
     // becomes free.
     //
-    if (!no_retry_on_stall && !ruby_port->onRetryList(this)) {
-        ruby_port->addToRetryList(this);
+    if (!no_retry_on_stall && !owner.onRetryList(this)) {
+        owner.addToRetryList(this);
     }
 }
 
@@ -393,20 +415,28 @@ RubyPort::MemResponsePort::recvFunctional(PacketPtr pkt)
 {
     DPRINTF(RubyPort, "Functional access for address: %#x\n", pkt->getAddr());
 
-    [[maybe_unused]] RubyPort *rp = static_cast<RubyPort *>(&owner);
-    RubySystem *rs = rp->m_ruby_system;
+    // In a CPU+dGPU system, GPU functional packets are injected into
+    // the CPU network. This happens because the requestorId is automatically
+    // set to that of the CPU network for these packets. Here, we set it
+    // to that of the GPU RubyPort so that it uses the right network to
+    // access GPU caches
+    RubySystem *rs = owner.m_ruby_system;
 
     // Check for pio requests and directly send them to the dedicated
     // pio port.
     if (!isPhysMemAddress(pkt)) {
         DPRINTF(RubyPort, "Pio Request for address: 0x%#x\n", pkt->getAddr());
-        assert(rp->pioRequestPort.isConnected());
-        rp->pioRequestPort.sendFunctional(pkt);
+        assert(owner.pioRequestPort.isConnected());
+        owner.pioRequestPort.sendFunctional(pkt);
         return;
     }
 
     assert(pkt->getAddr() + pkt->getSize() <=
-           makeLineAddress(pkt->getAddr()) + RubySystem::getBlockSizeBytes());
+           owner.makeLineAddress(pkt->getAddr()) + rs->getBlockSizeBytes());
+
+    if (pkt->req->getGPUFuncAccess()) {
+        pkt->req->requestorId(owner.m_controller->getRequestorId());
+    }
 
     if (access_backing_store) {
         // The attached physmem contains the official version of data.
@@ -458,7 +488,9 @@ RubyPort::ruby_hit_callback(PacketPtr pkt)
 
     // The packet was destined for memory and has not yet been turned
     // into a response
-    assert(system->isMemAddr(pkt->getAddr()) || system->isDeviceMemAddr(pkt));
+    assert(system->isMemAddr(pkt->getAddr()) ||
+        system->isDeviceMemAddr(pkt) ||
+        pkt->req->hasNoAddr());
     assert(pkt->isRequest());
 
     // First we must retrieve the request port from the sender State
@@ -501,7 +533,7 @@ RubyPort::ruby_stale_translation_callback(Addr txnId)
     // assumed they will not be modified or deleted by receivers.
     // TODO: should this really be using funcRequestorId?
     auto request = std::make_shared<Request>(
-        0, RubySystem::getBlockSizeBytes(), Request::TLBI_EXT_SYNC,
+        0, m_ruby_system->getBlockSizeBytes(), Request::TLBI_EXT_SYNC,
         Request::funcRequestorId);
     // Store the txnId in extraData instead of the address
     request->setExtraData(txnId);
@@ -615,7 +647,7 @@ RubyPort::MemResponsePort::hitCallback(PacketPtr pkt)
 
     // Flush, acquire, release requests don't access physical memory
     if (pkt->isFlush() || pkt->cmd == MemCmd::MemSyncReq
-        || pkt->cmd == MemCmd::WriteCompleteResp) {
+        || pkt->cmd == MemCmd::WriteCompleteResp || pkt->req->hasNoAddr()) {
         accessPhysMem = false;
     }
 
@@ -626,15 +658,14 @@ RubyPort::MemResponsePort::hitCallback(PacketPtr pkt)
 
     DPRINTF(RubyPort, "Hit callback needs response %d\n", needsResponse);
 
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
-    RubySystem *rs = ruby_port->m_ruby_system;
+    RubySystem *rs = owner.m_ruby_system;
     if (accessPhysMem) {
         // We must check device memory first in case it overlaps with the
         // system memory range.
-        if (ruby_port->system->isDeviceMemAddr(pkt)) {
-            auto dmem = ruby_port->system->getDeviceMemory(pkt);
+        if (owner.system->isDeviceMemAddr(pkt)) {
+            auto dmem = owner.system->getDeviceMemory(pkt);
             dmem->access(pkt);
-        } else if (ruby_port->system->isMemAddr(pkt->getAddr())) {
+        } else if (owner.system->isMemAddr(pkt->getAddr())) {
             rs->getPhysMem()->access(pkt);
         } else {
             panic("Packet is in neither device nor system memory!");
@@ -662,11 +693,10 @@ RubyPort::PioResponsePort::getAddrRanges() const
 {
     // at the moment the assumption is that the request port does not care
     AddrRangeList ranges;
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
 
-    for (size_t i = 0; i < ruby_port->request_ports.size(); ++i) {
+    for (size_t i = 0; i < owner.request_ports.size(); ++i) {
         ranges.splice(ranges.begin(),
-                ruby_port->request_ports[i]->getAddrRanges());
+                owner.request_ports[i]->getAddrRanges());
     }
     for ([[maybe_unused]] const auto &r : ranges)
         DPRINTF(RubyPort, "%s\n", r.to_string());
@@ -676,8 +706,7 @@ RubyPort::PioResponsePort::getAddrRanges() const
 bool
 RubyPort::MemResponsePort::isShadowRomAddress(Addr addr) const
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
-    AddrRangeList ranges = ruby_port->system->getShadowRomRanges();
+    AddrRangeList ranges = owner.system->getShadowRomRanges();
 
     for (auto it = ranges.begin(); it != ranges.end(); ++it) {
         if (it->contains(addr)) {
@@ -691,10 +720,9 @@ RubyPort::MemResponsePort::isShadowRomAddress(Addr addr) const
 bool
 RubyPort::MemResponsePort::isPhysMemAddress(PacketPtr pkt) const
 {
-    RubyPort *ruby_port = static_cast<RubyPort *>(&owner);
     Addr addr = pkt->getAddr();
-    return (ruby_port->system->isMemAddr(addr) && !isShadowRomAddress(addr))
-           || ruby_port->system->isDeviceMemAddr(pkt);
+    return (owner.system->isMemAddr(addr) && !isShadowRomAddress(addr))
+           || owner.system->isDeviceMemAddr(pkt);
 }
 
 void
@@ -705,7 +733,7 @@ RubyPort::ruby_eviction_callback(Addr address)
     // assumed they will not be modified or deleted by receivers.
     // TODO: should this really be using funcRequestorId?
     auto request = std::make_shared<Request>(
-        address, RubySystem::getBlockSizeBytes(), 0,
+        address, m_ruby_system->getBlockSizeBytes(), 0,
         Request::funcRequestorId);
 
     // Use a single packet to signal all snooping ports of the invalidation.
@@ -741,6 +769,24 @@ RubyPort::functionalWrite(Packet *func_pkt)
         }
     }
     return num_written;
+}
+
+Addr
+RubyPort::getOffset(Addr addr) const
+{
+    return ruby::getOffset(addr, m_ruby_system->getBlockSizeBits());
+}
+
+Addr
+RubyPort::makeLineAddress(Addr addr) const
+{
+    return ruby::makeLineAddress(addr, m_ruby_system->getBlockSizeBits());
+}
+
+std::string
+RubyPort::printAddress(Addr addr) const
+{
+    return ruby::printAddress(addr, m_ruby_system->getBlockSizeBits());
 }
 
 } // namespace ruby

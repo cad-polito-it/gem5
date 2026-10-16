@@ -97,6 +97,18 @@ class Shader : public ClockedObject
     // Last tick that all CUs attached to this shader were inactive
     Tick _lastInactiveTick;
 
+    // If a kernel-based exit event was requested, wait for all CUs in the
+    // shader to complete before actually exiting so that stats are updated.
+    bool kernelExitRequested = false;
+
+    // Set to true by the dispatcher if the current kernel is a blit kernel
+    bool blitKernel = false;
+
+    // Number of pending non-instruction invalidates outstanding. The shader
+    // should wait for these to be done to ensure correctness.
+    int num_outstanding_invl2s = 0;
+    std::vector<std::tuple<void *, uint32_t, Addr>> deferred_dispatches;
+
   public:
     typedef ShaderParams Params;
     enum hsail_mode_e {SIMT,VECTOR_SCALAR};
@@ -214,6 +226,7 @@ class Shader : public ClockedObject
     }
 
     RequestorID vramRequestorId();
+    GfxVersion getGfxVersion() const;
 
     EventFunctionWrapper tickEvent;
 
@@ -233,6 +246,8 @@ class Shader : public ClockedObject
     int n_cu;
     // Number of wavefront slots per SIMD per CU
     int n_wf;
+    //Number of cu units per sqc in the shader
+    int n_cu_per_sqc;
 
     // The size of global memory
     int globalMemSize;
@@ -259,6 +274,10 @@ class Shader : public ClockedObject
 
     int64_t max_valu_insts;
     int64_t total_valu_insts;
+
+    // Member and methods related to printing of GPU progress
+    const Tick progressInterval;
+    Tick getProgressInterval() const { return progressInterval; }
 
     Shader(const Params &p);
     ~Shader();
@@ -313,6 +332,20 @@ class Shader : public ClockedObject
     {
         stats.vectorInstDstOperand[num_operands]++;
     }
+
+    void
+    requestKernelExitEvent(bool is_blit_kernel)
+    {
+        kernelExitRequested = true;
+        blitKernel = is_blit_kernel;
+    }
+
+    void decNumOutstandingInvL2s();
+    void incNumOutstandingInvL2s() { num_outstanding_invl2s++; };
+    int getNumOutstandingInvL2s() const { return num_outstanding_invl2s; };
+
+    void addDeferredDispatch(void *raw_pkt, uint32_t queue_id,
+                             Addr host_pkt_addr);
 
   protected:
     struct ShaderStats : public statistics::Group

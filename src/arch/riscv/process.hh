@@ -33,6 +33,7 @@
 #include <string>
 #include <vector>
 
+#include "base/random.hh"
 #include "mem/page_table.hh"
 #include "sim/process.hh"
 #include "sim/syscall_abi.hh"
@@ -40,7 +41,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Loader, loader);
 namespace loader
 {
 class ObjectFile;
@@ -57,6 +57,9 @@ class RiscvProcess : public Process
 
   public:
     virtual bool mmapGrowsDown() const override { return false; }
+
+  protected:
+    Random::RandomPtr rng = Random::genRandom();
 };
 
 class RiscvProcess64 : public RiscvProcess

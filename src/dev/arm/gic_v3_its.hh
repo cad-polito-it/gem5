@@ -48,7 +48,6 @@
 #include "base/coroutine.hh"
 #include "base/types.hh"
 #include "dev/dma_device.hh"
-#include "params/Gicv3Its.hh"
 
 namespace gem5
 {
@@ -58,6 +57,8 @@ class Gicv3Redistributor;
 class ItsProcess;
 class ItsTranslation;
 class ItsCommand;
+
+struct Gicv3ItsParams;
 
 enum class ItsActionType
 {
@@ -94,7 +95,7 @@ class Gicv3Its : public BasicPioDevice
 
       public:
         DataPort(const std::string &_name, Gicv3Its &_its) :
-            RequestPort(_name, &_its),
+            RequestPort(_name),
             its(_its)
         {}
 

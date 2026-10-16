@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021 The Regents of the University of California
+ * Copyright (c) 2023 Google LLC
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -35,6 +36,7 @@
 #include "base/types.hh"
 #include "mem/packet.hh"
 #include "params/PMP.hh"
+#include "sim/serialize.hh"
 #include "sim/sim_object.hh"
 
 /**
@@ -43,6 +45,9 @@
  */
 
 namespace gem5
+{
+
+namespace RiscvISA
 {
 
 /**
@@ -85,6 +90,9 @@ class PMP : public SimObject
     /** pmpcfg address range execute permission mask */
     const uint8_t PMP_EXEC = 1 << 2;
 
+    /** pmpcfg A field mask */
+    const uint8_t PMP_A_MASK = 3 << 3;
+
     /** pmpcfg address range locked mask */
     const uint8_t PMP_LOCK = 1 << 7;
 
@@ -92,14 +100,27 @@ class PMP : public SimObject
     int numRules;
 
     /** single pmp entry struct*/
-    struct PmpEntry
+    struct PmpEntry : public Serializable
     {
         /** addr range corresponding to a single pmp entry */
         AddrRange pmpAddr = AddrRange(0, 0);
         /** raw addr in pmpaddr register for a pmp entry */
-        Addr rawAddr;
+        Addr rawAddr = 0;
         /** pmpcfg reg value for a pmp entry */
         uint8_t pmpCfg = 0;
+
+        void
+        serialize(CheckpointOut &cp) const
+        {
+            SERIALIZE_SCALAR(rawAddr);
+            SERIALIZE_SCALAR(pmpCfg);
+        }
+        void
+        unserialize(CheckpointIn &cp)
+        {
+            UNSERIALIZE_SCALAR(rawAddr);
+            UNSERIALIZE_SCALAR(pmpCfg);
+        }
     };
 
     /** a table of pmp entries */
@@ -111,14 +132,14 @@ class PMP : public SimObject
      * is allowed based on the pmp rules.
      * @param req memory request.
      * @param mode mode of request (read, write, execute).
-     * @param pmode current privilege mode of execution (U, S, M).
+     * @param pmode current privilege mode of memory (U, S, M).
      * @param tc thread context.
      * @param vaddr optional parameter to pass vaddr of original
      * request for which a page table walk is consulted by pmp unit
      * @return Fault.
      */
     Fault pmpCheck(const RequestPtr &req, BaseMMU::Mode mode,
-                  RiscvISA::PrivilegeMode pmode, ThreadContext *tc,
+                  PrivilegeMode pmode, ThreadContext *tc,
                   Addr vaddr = 0);
 
     /**
@@ -127,8 +148,9 @@ class PMP : public SimObject
      * rule of corresponding pmp entry.
      * @param pmp_index pmp entry index.
      * @param this_cfg value to be written to pmpcfg.
+     * @returns true if update pmpicfg success
      */
-    void pmpUpdateCfg(uint32_t pmp_index, uint8_t this_cfg);
+    bool pmpUpdateCfg(uint32_t pmp_index, uint8_t this_cfg);
 
     /**
      * pmpUpdateAddr updates the pmpaddr for a pmp
@@ -136,22 +158,17 @@ class PMP : public SimObject
      * rule of corresponding pmp entry.
      * @param pmp_index pmp entry index.
      * @param this_addr value to be written to pmpaddr.
+     * @returns true if update pmpaddri success
      */
-    void pmpUpdateAddr(uint32_t pmp_index, Addr this_addr);
+    bool pmpUpdateAddr(uint32_t pmp_index, Addr this_addr);
+
+    /**
+     * pmpReset reset when reset signal in trigger from
+     * CPU.
+     */
+    void pmpReset();
 
   private:
-    /**
-     * This function is called during a memory
-     * access to determine if the pmp table
-     * should be consulted for this access.
-     * @param pmode current privilege mode of execution (U, S, M).
-     * @param mode mode of request (read, write, execute).
-     * @param tc thread context.
-     * @return true or false.
-     */
-    bool shouldCheckPMP(RiscvISA::PrivilegeMode pmode,
-                BaseMMU::Mode mode, ThreadContext *tc);
-
     /**
      * createAddrfault creates an address fault
      * if the pmp checks fail to pass for a given
@@ -163,6 +180,18 @@ class PMP : public SimObject
      * @return Fault.
      */
     Fault createAddrfault(Addr vaddr, BaseMMU::Mode mode);
+
+    /**
+     * createDefaultFault creates an address fault when numRules = 0
+     * @param req memory request.
+     * @param mode mode of request (read, write, execute).
+     * @param pmode current privilege mode of memory (U, S, M).
+     * @param vaddr optional parameter to pass vaddr of original
+     * request for which a page table walk is consulted by pmp unit
+     * @return Fault.
+     */
+    Fault createDefaultFault(const RequestPtr &req, BaseMMU::Mode mode,
+                             PrivilegeMode pmode, Addr vaddr = 0);
 
     /**
      * pmpUpdateRule updates the pmp rule for a
@@ -190,8 +219,11 @@ class PMP : public SimObject
      */
     inline AddrRange pmpDecodeNapot(Addr pmpaddr);
 
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
+} // namespace RiscvISA
 } // namespace gem5
 
 #endif // __ARCH_RISCV_PMP_HH__

@@ -35,11 +35,14 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.SimObject import SimObject
+from m5.objects.Device import PioDevice
+from m5.objects.PciDevice import (
+    PciEndpoint,
+    PciIoBar,
+)
 from m5.params import *
 from m5.proxy import *
-from m5.objects.Device import PioDevice
-from m5.objects.PciDevice import PciDevice, PciIoBar
+from m5.SimObject import SimObject
 
 
 class VirtIODeviceBase(SimObject):
@@ -60,7 +63,7 @@ class VirtIODummyDevice(VirtIODeviceBase):
     cxx_class = "gem5::VirtIODummyDevice"
 
 
-class PciVirtIO(PciDevice):
+class PciVirtIO(PciEndpoint):
     type = "PciVirtIO"
     cxx_header = "dev/virtio/pci.hh"
     cxx_class = "gem5::PciVirtIO"

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2012-2015 Advanced Micro Devices, Inc.
+ * Copyright (c) 2023 Matthew D. Sinclair
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -36,7 +37,7 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
    CacheMemory * L1cache;
    int TCC_select_num_bits;
    Cycles issue_latency := 80;  // time to send data down to TCC
-   Cycles l2_hit_latency := 18; // for 1MB L2, 20 for 2MB
+   Cycles l2_hit_latency := 18; // for 1MiB L2, 20 for 2MiB
 
   MessageBuffer * requestFromSQC, network="To", virtual_network="1", vnet_type="request";
 
@@ -56,6 +57,7 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
     // Mem sys initiated
     Repl,           desc="Replacing block from cache";
     Data,           desc="Received Data";
+    Evict,          desc="Evict cache line";
   }
 
   enumeration(RequestType, desc="To communicate stats from transitions to recordStats") {
@@ -63,6 +65,7 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
     DataArrayWrite,   desc="Write the data array";
     TagArrayRead,     desc="Read the data array";
     TagArrayWrite,    desc="Write the data array";
+    TagArrayFlash,    desc="Flash clear the data array";
   }
 
 
@@ -74,7 +77,7 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
   }
 
   structure(TBE, desc="...") {
-    State TBEState,             desc="Transient state";
+    State TBEState,          desc="Transient state";
     DataBlock DataBlk,       desc="data for the block, required for concurrent writebacks";
     bool Dirty,              desc="Is the data dirty (different than memory)?";
     int NumPendingMsgs,      desc="Number of acks/data messages that this processor is waiting for";
@@ -89,7 +92,7 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
   }
 
   TBETable TBEs, template="<SQC_TBE>", constructor="m_number_of_TBEs";
-  int TCC_select_low_bit, default="RubySystem::getBlockSizeBits()";
+  int TCC_select_low_bit, default="m_ruby_system->getBlockSizeBits()";
 
   void set_cache_entry(AbstractCacheEntry b);
   void unset_cache_entry();
@@ -236,8 +239,18 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
     if (mandatoryQueue_in.isReady(clockEdge())) {
       peek(mandatoryQueue_in, RubyRequest, block_on="LineAddress") {
         Entry cache_entry := getCacheEntry(in_msg.LineAddress);
-        TBE tbe := TBEs.lookup(in_msg.LineAddress);
-        trigger(Event:Fetch, in_msg.LineAddress, cache_entry, tbe);
+        if (in_msg.Type == RubyRequestType:hasNoAddr) {
+          sequencer.readCallback(in_msg.LineAddress, cache_entry.DataBlk, true, MachineType:L1Cache);
+          mandatoryQueue_in.dequeue(clockEdge());
+        } else {
+          TBE tbe := TBEs.lookup(in_msg.LineAddress);
+          DPRINTF(RubySlicc, "%s\n", in_msg);
+          if (in_msg.Type == RubyRequestType:REPLACEMENT) {
+            trigger(Event:Evict, in_msg.LineAddress, cache_entry, tbe);
+          } else {
+            trigger(Event:Fetch, in_msg.LineAddress, cache_entry, tbe);
+          }
+        }
       }
     }
   }
@@ -289,12 +302,20 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
     APPEND_TRANSITION_COMMENT(cache_entry.DataBlk);
   }
 
+  action(inv_invDone, "inv", desc="local inv done") {
+    sequencer.invL1Callback();
+  }
+
   action(w_writeCache, "w", desc="write data to cache") {
     peek(responseToSQC_in, ResponseMsg) {
       assert(is_valid(cache_entry));
       cache_entry.DataBlk := in_msg.DataBlk;
       cache_entry.Dirty := false;
     }
+  }
+
+  action(mru_updateMRU, "mru", desc="Touch block for replacement policy") {
+    L1cache.setMRU(address);
   }
 
   // added for profiling
@@ -312,6 +333,13 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
   transition({I, V}, Repl, I) {TagArrayRead, TagArrayWrite} {
     // since we're evicting something, don't bother classifying as hit/miss
     ic_invCache;
+  }
+
+  transition({I, V}, Evict, I) {TagArrayRead, TagArrayWrite} {
+    // since we're evicting something, don't bother classifying as hit/miss
+    ic_invCache;
+    inv_invDone;
+    p_popMandatoryQueue;
   }
 
   transition(I, Data, V) {TagArrayRead, TagArrayWrite, DataArrayRead} {
@@ -332,6 +360,7 @@ machine(MachineType:SQC, "GPU SQC (L1 I Cache)")
   // simple hit transitions
   transition(V, Fetch) {TagArrayRead, DataArrayRead} {
     l_loadDoneHit;
+    mru_updateMRU;
     uu_profileDataHit; // line was in SQC, so we hit
     p_popMandatoryQueue;
   }

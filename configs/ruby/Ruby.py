@@ -38,26 +38,33 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import math
+from importlib import import_module
+
 import m5
-from m5.objects import *
 from m5.defines import buildEnv
-from m5.util import addToPath, fatal
+from m5.objects import *
+from m5.util import (
+    addToPath,
+    fatal,
+)
+
 from gem5.isas import ISA
-from gem5.runtime import get_runtime_isa
+from gem5.runtime import get_supported_isas
 
 addToPath("../")
 
-from common import ObjectList
-from common import MemConfig
-from common import FileSystemConfig
-
-from topologies import *
+from common import (
+    FileSystemConfig,
+    MemConfig,
+    ObjectList,
+)
 from network import Network
+from topologies import *
 
 
 def define_options(parser):
-    # By default, ruby uses the simple timing cpu
-    parser.set_defaults(cpu_type="TimingSimpleCPU")
+    # By default, ruby uses the simple timing cpu and the X86 ISA
+    parser.set_defaults(cpu_type="X86TimingSimpleCPU")
 
     parser.add_argument(
         "--ruby-clock",
@@ -119,9 +126,8 @@ def define_options(parser):
         help="Recycle latency for ruby controller input buffers",
     )
 
-    protocol = buildEnv["PROTOCOL"]
-    exec("from . import %s" % protocol)
-    eval("%s.define_options(parser)" % protocol)
+    import_module(f"ruby.{buildEnv['PROTOCOL']}").define_options(parser)
+
     Network.define_options(parser)
 
 
@@ -207,8 +213,10 @@ def create_topology(controllers, options):
     found in configs/topologies/BaseTopology.py
     This is a wrapper for the legacy topologies.
     """
-    exec("import topologies.%s as Topo" % options.topology)
-    topology = eval("Topo.%s(controllers)" % options.topology)
+    topology_class = getattr(
+        import_module(f"topologies.{options.topology}"), options.topology
+    )
+    topology = topology_class(controllers=controllers)
     return topology
 
 
@@ -221,7 +229,6 @@ def create_system(
     bootmem=None,
     cpus=None,
 ):
-
     system.ruby = RubySystem()
     ruby = system.ruby
 
@@ -241,16 +248,17 @@ def create_system(
     if cpus is None:
         cpus = system.cpu
 
-    protocol = buildEnv["PROTOCOL"]
-    exec("from . import %s" % protocol)
     try:
-        (cpu_sequencers, dir_cntrls, topology) = eval(
-            "%s.create_system(options, full_system, system, dma_ports,\
-                                    bootmem, ruby, cpus)"
-            % protocol
+        (cpu_sequencers, dir_cntrls, topology) = import_module(
+            f"ruby.{buildEnv['PROTOCOL']}"
+        ).create_system(
+            options, full_system, system, dma_ports, bootmem, ruby, cpus
         )
     except:
-        print("Error: could not create sytem for ruby protocol %s" % protocol)
+        print(
+            "Error: could not create sytem for ruby protocol "
+            f"{buildEnv['PROTOCOL']}"
+        )
         raise
 
     # Create the network topology
@@ -299,11 +307,32 @@ def create_system(
 
 
 def create_directories(options, bootmem, ruby_system, system):
+    import importlib
+
+    try:
+        # The supported way to use Ruby is now to use the protocol name as
+        # part of the names for all of the controllers. This is *required*
+        # when using `MULTIPLE` as the protocol and the `ALL` target.
+        Directory_Controller = getattr(
+            importlib.import_module("m5.objects"),
+            f"{options.protocol}_Directory_Controller",
+        )
+    except AttributeError:
+        # This is a fallback for the legacy Ruby protocols. If you can't
+        # find the protocol-specific directory controller, then use the
+        # generic one. This is a hack that only works if you have a single
+        # protocol.
+        Directory_Controller = getattr(
+            importlib.import_module("m5.objects"), "Directory_Controller"
+        )
+
     dir_cntrl_nodes = []
     for i in range(options.num_dirs):
         dir_cntrl = Directory_Controller()
         dir_cntrl.version = i
-        dir_cntrl.directory = RubyDirectoryMemory()
+        dir_cntrl.directory = RubyDirectoryMemory(
+            block_size=ruby_system.block_size_bytes
+        )
         dir_cntrl.ruby_system = ruby_system
 
         exec("ruby_system.dir_cntrl%d = dir_cntrl" % i)
@@ -311,7 +340,9 @@ def create_directories(options, bootmem, ruby_system, system):
 
     if bootmem is not None:
         rom_dir_cntrl = Directory_Controller()
-        rom_dir_cntrl.directory = RubyDirectoryMemory()
+        rom_dir_cntrl.directory = RubyDirectoryMemory(
+            block_size=ruby_system.block_size_bytes
+        )
         rom_dir_cntrl.ruby_system = ruby_system
         rom_dir_cntrl.version = i + 1
         rom_dir_cntrl.memory = bootmem.port
@@ -326,9 +357,12 @@ def send_evicts(options):
     # 1. The O3 model must keep the LSQ coherent with the caches
     # 2. The x86 mwait instruction is built on top of coherence invalidations
     # 3. The local exclusive monitor in ARM systems
-    if options.cpu_type == "DerivO3CPU" or get_runtime_isa() in (
-        ISA.X86,
-        ISA.ARM,
-    ):
+    if get_supported_isas() == {ISA.NULL}:
+        return False
+
+    if (
+        hasattr(m5.objects, "DerivO3CPU")
+        and isinstance(options.cpu_type, DerivO3CPU)
+    ) or ObjectList.cpu_list.get_isa(options.cpu_type) in [ISA.X86, ISA.ARM]:
         return True
     return False

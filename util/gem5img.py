@@ -42,13 +42,21 @@
 # Script for managing a gem5 disk image.
 #
 
-from argparse import ArgumentParser
 import os
-from os import environ as env
-import string
-from subprocess import CalledProcessError, Popen, PIPE, STDOUT
-from sys import exit, argv
 import re
+import string
+from argparse import ArgumentParser
+from os import environ as env
+from subprocess import (
+    PIPE,
+    STDOUT,
+    CalledProcessError,
+    Popen,
+)
+from sys import (
+    argv,
+    exit,
+)
 
 # Some constants.
 MaxLBACylinders = 16383
@@ -57,7 +65,7 @@ MaxLBASectors = 63
 MaxLBABlocks = MaxLBACylinders * MaxLBAHeads * MaxLBASectors
 
 BlockSize = 512
-MB = 1024 * 1024
+MiB = 1024 * 1024
 
 # Setup PATH to look in the sbins.
 env["PATH"] += ":/sbin:/usr/sbin"
@@ -65,11 +73,12 @@ env["PATH"] += ":/sbin:/usr/sbin"
 # Whether to print debug output.
 debug = False
 
+
 # Figure out cylinders, heads and sectors from a size in blocks.
 def chsFromSize(sizeInBlocks):
     if sizeInBlocks >= MaxLBABlocks:
-        sizeInMBs = (sizeInBlocks * BlockSize) / MB
-        print("%d MB is too big for LBA, truncating file." % sizeInMBs)
+        sizeInMiBs = (sizeInBlocks * BlockSize) / MiB
+        print("%d MiB is too big for LBA, truncating file." % sizeInMiBs)
         return (MaxLBACylinders, MaxLBAHeads, MaxLBASectors)
 
     sectors = sizeInBlocks
@@ -135,11 +144,11 @@ def findProg(program, cleanupDev=None):
     if returncode != 0:
         if cleanupDev:
             cleanupDev.destroy()
-        exit("Unable to find program %s, check your PATH variable." % program)
+        exit(f"Unable to find program {program}, check your PATH variable.")
     return out.strip()
 
 
-class LoopbackDevice(object):
+class LoopbackDevice:
     def __init__(self, devFile=None):
         self.devFile = devFile
 
@@ -185,7 +194,8 @@ def findPartOffset(devFile, fileName, partition):
         r"\s*:\s*"  # Separator
         r"start=\s*(?P<start>\d+),\s*"  # Partition start record
         r"size=\s*(?P<size>\d+),\s*"  # Partition size record
-        r"type=(?P<type>\d+)"  # Partition type record
+        r"type=(?P<type>.+?),*?"  # Partition type record
+        r".*"  # anything else, e.g., name field
         r"\s*$"  # End of line
     )
     lines = out.splitlines()
@@ -197,7 +207,7 @@ def findPartOffset(devFile, fileName, partition):
     else:
         # No partition description was found
         print("No partition description was found in sfdisk output:")
-        print("\n".join("  {}".format(line.rstrip()) for line in lines))
+        print("\n".join(f"  {line.rstrip()}" for line in lines))
         print("Could not determine size of first partition.")
         exit(1)
 
@@ -227,7 +237,7 @@ commands = {}
 commandOrder = []
 
 
-class Command(object):
+class Command:
     def addArgument(self, *args, **kargs):
         self.parser.add_argument(*args, **kargs)
 
@@ -242,7 +252,7 @@ class Command(object):
         posUsage = ""
         for posArg in posArgs:
             (argName, argDesc) = posArg
-            usage += " %s" % argName
+            usage += f" {argName}"
             posUsage += "\n  %s: %s" % posArg
         usage += posUsage
         self.parser = ArgumentParser(usage=usage, description=description)
@@ -266,7 +276,7 @@ class Command(object):
 
     def runCom(self):
         if not self.func:
-            exit("Unimplemented command %s!" % self.name)
+            exit(f"Unimplemented command {self.name}!")
         self.func(self.options, self.args)
 
 
@@ -275,7 +285,7 @@ class Command(object):
 initCom = Command(
     "init",
     "Create an image with an empty file system.",
-    [("file", "Name of the image file."), ("mb", "Size of the file in MB.")],
+    [("file", "Name of the image file."), ("mb", "Size of the file in MiB.")],
 )
 initCom.addArgument(
     "-t",
@@ -300,7 +310,7 @@ mountCom = Command(
 def mountComFunc(options, args):
     (path, mountPoint) = args
     if not os.path.isdir(mountPoint):
-        print("Mount point %s is not a directory." % mountPoint)
+        print(f"Mount point {mountPoint} is not a directory.")
 
     dev = LoopbackDevice()
     if dev.setup(path, offset=True) != 0:
@@ -324,12 +334,12 @@ umountCom = Command(
 def umountComFunc(options, args):
     (mountPoint,) = args
     if not os.path.isdir(mountPoint):
-        print("Mount point %s is not a directory." % mountPoint)
+        print(f"Mount point {mountPoint} is not a directory.")
         exit(1)
 
     dev = mountPointToDev(mountPoint)
     if not dev:
-        print("Unable to find mount information for %s." % mountPoint)
+        print(f"Unable to find mount information for {mountPoint}.")
 
     # Unmount the loopback device.
     if runPriv([findProg("umount"), mountPoint]) != 0:
@@ -346,12 +356,12 @@ umountCom.func = umountComFunc
 newCom = Command(
     "new",
     'File creation part of "init".',
-    [("file", "Name of the image file."), ("mb", "Size of the file in MB.")],
+    [("file", "Name of the image file."), ("mb", "Size of the file in MiB.")],
 )
 
 
 def newImage(file, mb):
-    (cylinders, heads, sectors) = chsFromSize((mb * MB) / BlockSize)
+    (cylinders, heads, sectors) = chsFromSize((mb * MiB) / BlockSize)
     size = cylinders * heads * sectors * BlockSize
 
     # We lseek to the end of the file and only write one byte there. This
@@ -424,7 +434,7 @@ formatCom.addArgument(
 
 
 def formatImage(dev, fsType):
-    return runPriv([findProg("mkfs.%s" % fsType, dev), str(dev)])
+    return runPriv([findProg(f"mkfs.{fsType}", dev), str(dev)])
 
 
 def formatComFunc(options, args):
@@ -453,7 +463,7 @@ def initComFunc(options, args):
     if dev.setup(path) != 0:
         exit(1)
     size = os.path.getsize(path)
-    if partition(dev, *chsFromSize((mb * MB) / BlockSize)) != 0:
+    if partition(dev, *chsFromSize((mb * MiB) / BlockSize)) != 0:
         dev.destroy()
         exit(1)
     dev.destroy()
@@ -474,7 +484,7 @@ if len(argv) < 2 or argv[1] not in commands:
     print("where [command] is one of ")
     for name in commandOrder:
         command = commands[name]
-        print("    %s: %s" % (command.name, command.description))
+        print(f"    {command.name}: {command.description}")
     print("Watch for orphaned loopback devices and delete them with")
     print("losetup -d. Mounted images will belong to root, so you may need")
     print("to use sudo to modify their contents.")

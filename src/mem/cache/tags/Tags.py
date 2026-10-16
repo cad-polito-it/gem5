@@ -1,4 +1,4 @@
-# Copyright (c) 2012-2013 ARM Limited
+# Copyright (c) 2012-2013, 2023-2024 ARM Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -33,10 +33,35 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.params import *
-from m5.proxy import *
 from m5.objects.ClockedObject import ClockedObject
 from m5.objects.IndexingPolicies import *
+from m5.objects.PartitioningPolicies import PartitionManager
+from m5.params import *
+from m5.proxy import *
+from m5.SimObject import SimObject
+
+
+class TaggedIndexingPolicy(SimObject):
+    type = "TaggedIndexingPolicy"
+    abstract = True
+    cxx_class = "gem5::IndexingPolicyTemplate<gem5::TaggedTypes>"
+    cxx_header = "mem/cache/tags/tagged_entry.hh"
+    cxx_template_params = ["class Types"]
+
+    # Get the associativity
+    assoc = Param.Int(Parent.assoc, "associativity")
+
+
+class TaggedSetAssociative(TaggedIndexingPolicy):
+    type = "TaggedSetAssociative"
+    cxx_class = "gem5::TaggedSetAssociative"
+    cxx_header = "mem/cache/tags/tagged_entry.hh"
+
+    # Get the size from the parent (cache)
+    size = Param.MemorySize(Parent.size, "capacity in bytes")
+
+    # Get the entry size from the parent (tags)
+    entry_size = Param.Int(Parent.entry_size, "entry size in bytes")
 
 
 class BaseTags(ClockedObject):
@@ -71,8 +96,12 @@ class BaseTags(ClockedObject):
     )
 
     # Get indexing policy
-    indexing_policy = Param.BaseIndexingPolicy(
-        SetAssociative(), "Indexing policy"
+    indexing_policy = Param.TaggedIndexingPolicy(
+        TaggedSetAssociative(), "Indexing policy"
+    )
+
+    partitioning_manager = Param.PartitionManager(
+        Parent.partitioning_manager, "Cache partitioning manager"
     )
 
     # Set the indexing entry size as the block size
@@ -139,7 +168,7 @@ class FALRU(BaseTags):
     cxx_class = "gem5::FALRU"
 
     min_tracked_cache_size = Param.MemorySize(
-        "128KiB", "Minimum cache size" " for which we track statistics"
+        "128KiB", "Minimum cache size for which we track statistics"
     )
 
     # This tag uses its own embedded indexing

@@ -25,11 +25,14 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import argparse
+import os
+import sys
+
 import m5
-from m5.objects import *
 from m5.defines import buildEnv
+from m5.objects import *
 from m5.util import addToPath
-import os, argparse, sys
 
 addToPath("../")
 
@@ -77,7 +80,7 @@ args = parser.parse_args()
 args.l1d_size = "256B"
 args.l1i_size = "256B"
 args.l2_size = "512B"
-args.l3_size = "1kB"
+args.l3_size = "1KiB"
 args.l1d_assoc = 2
 args.l1i_assoc = 2
 args.l2_assoc = 2
@@ -90,6 +93,8 @@ args.l3_assoc = 2
 # Check the protocol
 check_flush = False
 if buildEnv["PROTOCOL"] == "MOESI_hammer":
+    check_flush = True
+if buildEnv["PROTOCOL"] == "MESI_Three_Level":
     check_flush = True
 
 tester = RubyTester(

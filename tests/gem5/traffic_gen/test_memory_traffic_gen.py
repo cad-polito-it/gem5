@@ -44,7 +44,6 @@ def test_memory(
     memory: str,
     *args,
 ) -> None:
-
     name = (
         "test-memory-"
         + f"{generator}-{generator_cores}-{cache}-{module}-{memory}"
@@ -72,6 +71,7 @@ def test_memory(
             "tests",
             "gem5",
             "traffic_gen",
+            "configs",
             "simple_traffic_run.py",
         ),
         config_args=[generator, generator_cores, cache, module]
@@ -83,7 +83,17 @@ def test_memory(
     )
 
 
-cache_classes = ["NoCache", "PrivateL1", "PrivateL1PrivateL2", "MESITwoLevel"]
+cache_classes = [
+    "NoCache",
+    "PrivateL1",
+    "PrivateL1PrivateL2",
+    "MESITwoLevel",
+    "MIExample",
+    "CHIL1",
+    "MESIThreeLevel",
+    "OctopiCache",
+]
+
 memory_classes = [
     "SingleChannelDDR3_1600",
     "SingleChannelDDR3_2133",

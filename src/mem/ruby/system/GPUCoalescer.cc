@@ -38,6 +38,7 @@
 #include "debug/GPUCoalescer.hh"
 #include "debug/MemoryAccess.hh"
 #include "debug/ProtocolTrace.hh"
+#include "debug/RubyHitMiss.hh"
 #include "debug/RubyPort.hh"
 #include "debug/RubyStats.hh"
 #include "gpu-compute/shader.hh"
@@ -71,6 +72,14 @@ UncoalescedTable::insertPacket(PacketPtr pkt)
     instMap[seqNum].push_back(pkt);
     DPRINTF(GPUCoalescer, "Adding 0x%X seqNum %d to map. (map %d vec %d)\n",
             pkt->getAddr(), seqNum, instMap.size(), instMap[seqNum].size());
+}
+
+void
+UncoalescedTable::insertReqType(PacketPtr pkt, RubyRequestType type)
+{
+    uint64_t seqNum = pkt->req->getReqInstSeqNum();
+
+    reqTypeMap[seqNum] = type;
 }
 
 bool
@@ -128,9 +137,21 @@ UncoalescedTable::updateResources()
             instMap.erase(iter++);
             instPktsRemaining.erase(seq_num);
 
-            // Release the token
-            DPRINTF(GPUCoalescer, "Returning token seqNum %d\n", seq_num);
-            coalescer->getGMTokenPort().sendTokens(1);
+            // Release the token if the Ruby system is not in cooldown
+            // or warmup phases. When in these phases, the RubyPorts
+            // are accessed directly using the makeRequest() command
+            // instead of accessing through the port. This makes
+            // sending tokens through the port unnecessary
+            if (!coalescer->getRubySystem()->getWarmupEnabled() &&
+                !coalescer->getRubySystem()->getCooldownEnabled()) {
+                if (reqTypeMap[seq_num] != RubyRequestType_FLUSH) {
+                    DPRINTF(GPUCoalescer,
+                            "Returning token seqNum %d\n", seq_num);
+                    coalescer->getGMTokenPort().sendTokens(1);
+                }
+            }
+
+            reqTypeMap.erase(seq_num);
         } else {
             ++iter;
         }
@@ -156,7 +177,7 @@ UncoalescedTable::printRequestTable(std::stringstream& ss)
     ss << "Listing pending packets from " << instMap.size() << " instructions";
 
     for (auto& inst : instMap) {
-        ss << "\tAddr: " << printAddress(inst.first) << " with "
+        ss << "\tAddr: " << coalescer->printAddress(inst.first) << " with "
            << inst.second.size() << " pending packets" << std::endl;
     }
 }
@@ -190,7 +211,8 @@ GPUCoalescer::GPUCoalescer(const Params &p)
                  false, Event::Progress_Event_Pri),
       uncoalescedTable(this),
       deadlockCheckEvent([this]{ wakeup(); }, "GPUCoalescer deadlock check"),
-      gmTokenPort(name() + ".gmTokenPort", this)
+      stats(this),
+      gmTokenPort(name() + ".gmTokenPort")
 {
     m_store_waiting_on_load_cycles = 0;
     m_store_waiting_on_store_cycles = 0;
@@ -324,7 +346,8 @@ GPUCoalescer::printRequestTable(std::stringstream& ss)
                << "\t\tIssue time: "
                << request->getIssueTime() * clockPeriod() << "\n"
                << "\t\tDifference from current tick: "
-               << (curCycle() - request->getIssueTime()) * clockPeriod();
+               << (curCycle() - request->getIssueTime()) * clockPeriod()
+               << "\n";
         }
     }
 
@@ -417,7 +440,7 @@ GPUCoalescer::writeCallback(Addr address,
     auto crequest = coalescedTable.at(address).front();
 
     hitCallback(crequest, mach, data, true, crequest->getIssueTime(),
-                forwardRequestTime, firstResponseTime, isRegion);
+                forwardRequestTime, firstResponseTime, isRegion, false, false);
 
     // remove this crequest in coalescedTable
     delete crequest;
@@ -464,29 +487,16 @@ GPUCoalescer::writeCompleteCallback(Addr address,
 void
 GPUCoalescer::readCallback(Addr address, DataBlock& data)
 {
-    readCallback(address, MachineType_NULL, data);
-}
-
-void
-GPUCoalescer::readCallback(Addr address,
-                        MachineType mach,
-                        DataBlock& data)
-{
-    readCallback(address, mach, data, Cycles(0), Cycles(0), Cycles(0));
+    readCallback(address, MachineType_NULL, data, false);
 }
 
 void
 GPUCoalescer::readCallback(Addr address,
                         MachineType mach,
                         DataBlock& data,
-                        Cycles initialRequestTime,
-                        Cycles forwardRequestTime,
-                        Cycles firstResponseTime)
+                        bool externalHit = false)
 {
-
-    readCallback(address, mach, data,
-                 initialRequestTime, forwardRequestTime, firstResponseTime,
-                 false);
+    readCallback(address, mach, data, Cycles(0), Cycles(0), Cycles(0), externalHit);
 }
 
 void
@@ -496,7 +506,23 @@ GPUCoalescer::readCallback(Addr address,
                         Cycles initialRequestTime,
                         Cycles forwardRequestTime,
                         Cycles firstResponseTime,
-                        bool isRegion)
+                        bool externalHit = false)
+{
+
+    readCallback(address, mach, data,
+                 initialRequestTime, forwardRequestTime, firstResponseTime,
+                 false, externalHit);
+}
+
+void
+GPUCoalescer::readCallback(Addr address,
+                        MachineType mach,
+                        DataBlock& data,
+                        Cycles initialRequestTime,
+                        Cycles forwardRequestTime,
+                        Cycles firstResponseTime,
+                        bool isRegion,
+                        bool externalHit = false)
 {
     assert(address == makeLineAddress(address));
     assert(coalescedTable.count(address));
@@ -505,11 +531,15 @@ GPUCoalescer::readCallback(Addr address,
     fatal_if(crequest->getRubyType() != RubyRequestType_LD,
              "readCallback received non-read type response\n");
 
+    bool mshr_hit_under_miss = false;
     // Iterate over the coalesced requests to respond to as many loads as
-    // possible until another request type is seen. Models MSHR for TCP.
+    // possible until another request type is seen. Models MSHR for
+    // Coalescer. Do not respond to pending loads that have SLC/GLC flags
+    // set; issue them instead
     while (crequest->getRubyType() == RubyRequestType_LD) {
-        hitCallback(crequest, mach, data, true, crequest->getIssueTime(),
-                    forwardRequestTime, firstResponseTime, isRegion);
+    hitCallback(crequest, mach, data, true,
+            crequest->getIssueTime(), forwardRequestTime, firstResponseTime,
+            isRegion, externalHit, mshr_hit_under_miss);
 
         delete crequest;
         coalescedTable.at(address).pop_front();
@@ -518,6 +548,14 @@ GPUCoalescer::readCallback(Addr address,
         }
 
         crequest = coalescedTable.at(address).front();
+
+        PacketPtr pkt = crequest->getFirstPkt();
+        bool is_request_local = !pkt->isGLCSet() && !pkt->isSLCSet();
+        if (!is_request_local) {
+            break;
+        }
+
+        mshr_hit_under_miss = true;
     }
 
     if (coalescedTable.at(address).empty()) {
@@ -536,7 +574,9 @@ GPUCoalescer::hitCallback(CoalescedRequest* crequest,
                        Cycles initialRequestTime,
                        Cycles forwardRequestTime,
                        Cycles firstResponseTime,
-                       bool isRegion)
+                       bool isRegion,
+                       bool externalHit = false,
+                       bool mshrHitUnderMiss = false)
 {
     PacketPtr pkt = crequest->getFirstPkt();
     Addr request_address = pkt->getAddr();
@@ -547,32 +587,68 @@ GPUCoalescer::hitCallback(CoalescedRequest* crequest,
 
     DPRINTF(GPUCoalescer, "Got hitCallback for 0x%X\n", request_line_address);
 
-    recordMissLatency(crequest, mach,
+    DPRINTF(RubyHitMiss, "GPU TCP Cache %s at %#x\n",
+                        externalHit ? "hit" : "miss",
+                        printAddress(request_address));
+
+    recordStats(crequest, mach,
                       initialRequestTime,
                       forwardRequestTime,
                       firstResponseTime,
-                      success, isRegion);
+                      isRegion,
+                      mshrHitUnderMiss);
     // update the data
     //
-    // MUST AD DOING THIS FOR EACH REQUEST IN COALESCER
+    // MUST ADD DOING THIS FOR EACH REQUEST IN COALESCER
     std::vector<PacketPtr> pktList = crequest->getPackets();
+
+    uint8_t* log = nullptr;
     DPRINTF(GPUCoalescer, "Responding to %d packets for addr 0x%X\n",
             pktList.size(), request_line_address);
+    uint32_t offset;
+    int pkt_size;
     for (auto& pkt : pktList) {
+        offset = getOffset(pkt->getAddr());
+        pkt_size = pkt->getSize();
         request_address = pkt->getAddr();
+
+        // When the Ruby system is cooldown phase, the requests come from
+        // the cache recorder. These requests do not get coalesced and
+        // do not return valid data.
+        if (m_ruby_system->getCooldownEnabled())
+            continue;
+
         if (pkt->getPtr<uint8_t>()) {
-            if ((type == RubyRequestType_LD) ||
-                (type == RubyRequestType_ATOMIC) ||
-                (type == RubyRequestType_ATOMIC_RETURN) ||
-                (type == RubyRequestType_IFETCH) ||
-                (type == RubyRequestType_RMW_Read) ||
-                (type == RubyRequestType_Locked_RMW_Read) ||
-                (type == RubyRequestType_Load_Linked)) {
-                pkt->setData(
-                    data.getData(getOffset(request_address), pkt->getSize()));
-            } else {
-                data.setData(pkt->getPtr<uint8_t>(),
-                             getOffset(request_address), pkt->getSize());
+            switch(type) {
+                // Store and AtomicNoReturns follow the same path, as the
+                // data response is not needed.
+                case RubyRequestType_ATOMIC_NO_RETURN:
+                    assert(pkt->isAtomicOp());
+                    break;
+                case RubyRequestType_ST:
+                    break;
+                case RubyRequestType_LD:
+                    pkt->setData(data.getData(offset, pkt_size));
+                    break;
+                case RubyRequestType_ATOMIC_RETURN:
+                    assert(pkt->isAtomicOp());
+                    // Atomic operations are performed by the WriteMask
+                    // in packet order, set by the crequest. Thus, when
+                    // unpacking the changes from the log, we read from
+                    // the front of the log to correctly map response
+                    // data into the packets.
+
+                    // Log entry contains the old value before the current
+                    // atomic operation occurred.
+                    log = data.popAtomicLogEntryFront();
+                    pkt->setData(&log[offset]);
+                    delete [] log;
+                    log = nullptr;
+                    break;
+                default:
+                    panic("Unsupported ruby packet type:%s\n",
+                                    RubyRequestType_to_string(type));
+                    break;
             }
         } else {
             DPRINTF(MemoryAccess,
@@ -581,6 +657,7 @@ GPUCoalescer::hitCallback(CoalescedRequest* crequest,
                     RubyRequestType_to_string(type));
         }
     }
+    assert(data.numAtomicLogEntries() == 0);
 
     m_outstanding_count--;
     assert(m_outstanding_count >= 0);
@@ -603,7 +680,6 @@ GPUCoalescer::getRequestType(PacketPtr pkt)
     assert(!pkt->req->isLLSC());
     assert(!pkt->req->isLockedRMW());
     assert(!pkt->req->isInstFetch());
-    assert(!pkt->isFlush());
 
     if (pkt->req->isAtomicReturn()) {
         req_type = RubyRequestType_ATOMIC_RETURN;
@@ -613,6 +689,8 @@ GPUCoalescer::getRequestType(PacketPtr pkt)
         req_type = RubyRequestType_LD;
     } else if (pkt->isWrite()) {
         req_type = RubyRequestType_ST;
+    } else if (pkt->isFlush()) {
+        req_type = RubyRequestType_FLUSH;
     } else {
         panic("Unsupported ruby packet type\n");
     }
@@ -625,16 +703,16 @@ GPUCoalescer::getRequestType(PacketPtr pkt)
 RequestStatus
 GPUCoalescer::makeRequest(PacketPtr pkt)
 {
-    // all packets must have valid instruction sequence numbers
-    assert(pkt->req->hasInstSeqNum());
-
     if (pkt->cmd == MemCmd::MemSyncReq) {
         // issue mem_sync requests immediately to the cache system without
         // going through uncoalescedTable like normal LD/ST/Atomic requests
         issueMemSyncRequest(pkt);
     } else {
+        // all packets must have valid instruction sequence numbers
+        assert(pkt->req->hasInstSeqNum());
+
         // otherwise, this must be either read or write command
-        assert(pkt->isRead() || pkt->isWrite());
+        assert(pkt->isRead() || pkt->isWrite() || pkt->isFlush());
 
         InstSeqNum seq_num = pkt->req->getReqInstSeqNum();
 
@@ -643,10 +721,17 @@ GPUCoalescer::makeRequest(PacketPtr pkt)
         // number of lanes actives for that vmem request (i.e., the popcnt
         // of the exec_mask.
         int num_packets = 1;
-        if (!m_usingRubyTester) {
-            num_packets = 0;
-            for (int i = 0; i < TheGpuISA::NumVecElemPerVecReg; i++) {
-                num_packets += getDynInst(pkt)->getLaneStatus(i);
+
+        // When Ruby is in warmup or cooldown phase, the requests come from
+        // the cache recorder. There is no dynamic instruction associated
+        // with these requests either
+        if (!m_ruby_system->getWarmupEnabled()
+                && !m_ruby_system->getCooldownEnabled()) {
+            if (!m_usingRubyTester) {
+                num_packets = 0;
+                for (int i = 0; i < TheGpuISA::NumVecElemPerVecReg; i++) {
+                    num_packets += getDynInst(pkt)->getLaneStatus(i);
+                }
             }
         }
 
@@ -655,6 +740,7 @@ GPUCoalescer::makeRequest(PacketPtr pkt)
         // future cycle. Packets remaining is set to the number of excepted
         // requests from the instruction based on its exec_mask.
         uncoalescedTable.insertPacket(pkt);
+        uncoalescedTable.insertReqType(pkt, getRequestType(pkt));
         uncoalescedTable.initPacketsRemaining(seq_num, num_packets);
         DPRINTF(GPUCoalescer, "Put pkt with addr 0x%X to uncoalescedTable\n",
                 pkt->getAddr());
@@ -904,7 +990,7 @@ GPUCoalescer::atomicCallback(Addr address,
              "atomicCallback saw non-atomic type response\n");
 
     hitCallback(crequest, mach, (DataBlock&)data, true,
-                crequest->getIssueTime(), Cycles(0), Cycles(0), false);
+                crequest->getIssueTime(), Cycles(0), Cycles(0), false, false);
 
     delete crequest;
     coalescedTable.at(address).pop_front();
@@ -921,21 +1007,27 @@ void
 GPUCoalescer::completeHitCallback(std::vector<PacketPtr> & mylist)
 {
     for (auto& pkt : mylist) {
-        RubyPort::SenderState *ss =
-            safe_cast<RubyPort::SenderState *>(pkt->senderState);
-        MemResponsePort *port = ss->port;
-        assert(port != NULL);
+        // When Ruby is in warmup or cooldown phase, the requests come
+        // from the cache recorder. They do not track which port to use
+        // and do not need to send the response back
+        if (!m_ruby_system->getWarmupEnabled()
+                && !m_ruby_system->getCooldownEnabled()) {
+            RubyPort::SenderState *ss =
+                safe_cast<RubyPort::SenderState *>(pkt->senderState);
+            MemResponsePort *port = ss->port;
+            assert(port != NULL);
 
-        pkt->senderState = ss->predecessor;
+            pkt->senderState = ss->predecessor;
 
-        if (pkt->cmd != MemCmd::WriteReq) {
-            // for WriteReq, we keep the original senderState until
-            // writeCompleteCallback
-            delete ss;
+            if (pkt->cmd != MemCmd::WriteReq) {
+                // for WriteReq, we keep the original senderState until
+                // writeCompleteCallback
+                delete ss;
+            }
+
+            port->hitCallback(pkt);
+            trySendRetries();
         }
-
-        port->hitCallback(pkt);
-        trySendRetries();
     }
 
     // We schedule an event in the same tick as hitCallback (similar to
@@ -947,16 +1039,63 @@ GPUCoalescer::completeHitCallback(std::vector<PacketPtr> & mylist)
         schedule(issueEvent, curTick());
     }
 
-    testDrainComplete();
+    RubySystem *rs = m_ruby_system;
+    if (m_ruby_system->getWarmupEnabled()) {
+        rs->m_cache_recorder->enqueueNextFetchRequest();
+    } else if (m_ruby_system->getCooldownEnabled()) {
+        rs->m_cache_recorder->enqueueNextFlushRequest();
+    } else {
+        testDrainComplete();
+    }
 }
 
 void
-GPUCoalescer::recordMissLatency(CoalescedRequest* crequest,
+GPUCoalescer::recordStats(CoalescedRequest* crequest,
                                 MachineType mach,
                                 Cycles initialRequestTime,
                                 Cycles forwardRequestTime,
                                 Cycles firstResponseTime,
-                                bool success, bool isRegion)
+                                bool isRegion, bool mshrHitUnderMiss)
+{
+    RubyRequestType type = crequest->getRubyType();
+
+    if (mshrHitUnderMiss) {
+        // Add the number of mshr hits under misses to the
+        // TCP demand hits stat.
+        // We don't need to profile misses since they will be
+        // profiled at the TCP. Only the MSHR hits under misses
+        // needs to be profiled here
+        PacketPtr pkt = crequest->getFirstPkt();
+        if (!pkt->isGLCSet() &&
+                !pkt->isSLCSet()) {
+            m_dataCache_ptr->profileDemandHit();
+        }
+
+        // Since the request hit in the mshr, update mshr stats
+        if (type == RubyRequestType_LD) {
+            stats.m_mshr_ld_hits_under_miss++;
+        }
+    } else  {
+        if (type == RubyRequestType_LD) {
+            stats.m_mshr_ld_misses++;
+        } else {
+            stats.m_mshr_st_misses++;
+        }
+    }
+}
+
+GPUCoalescer::GPUCoalescerStats::GPUCoalescerStats(statistics::Group *parent)
+    : statistics::Group(parent),
+    ADD_STAT(m_mshr_ld_hits_under_miss,
+            "Number of load requests that hit in the coalescer MSHR"),
+    ADD_STAT(m_mshr_ld_misses,
+            "Number of load requests that miss in the coalescer MSHR"),
+    ADD_STAT(m_mshr_st_misses,
+            "Number of store requests that miss in the coalescer MSHR"),
+    ADD_STAT(m_mshr_accesses,
+            "Number of mshr accesses",
+            m_mshr_ld_hits_under_miss + m_mshr_ld_misses
+            + m_mshr_st_misses)
 {
 }
 

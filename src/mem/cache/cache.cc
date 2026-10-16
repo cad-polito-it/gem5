@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2019 ARM Limited
+ * Copyright (c) 2010-2019, 2024 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -57,6 +57,7 @@
 #include "debug/CacheVerbose.hh"
 #include "enums/Clusivity.hh"
 #include "mem/cache/cache_blk.hh"
+#include "mem/cache/compressors/base.hh"
 #include "mem/cache/mshr.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/cache/write_queue_entry.hh"
@@ -172,7 +173,7 @@ Cache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
         DPRINTF(Cache, "%s for %s\n", __func__, pkt->print());
 
         // flush and invalidate any existing block
-        CacheBlk *old_blk(tags->findBlock(pkt->getAddr(), pkt->isSecure()));
+        CacheBlk *old_blk(tags->findBlock({pkt->getAddr(), pkt->isSecure()}));
         if (old_blk && old_blk->isValid()) {
             BaseCache::evictBlock(old_blk, writebacks);
         }
@@ -339,13 +340,25 @@ Cache::handleTimingReqMiss(PacketPtr pkt, CacheBlk *blk, Tick forward_time,
         if (pkt->isWrite()) {
             allocateWriteBuffer(pkt, forward_time);
         } else {
-            assert(pkt->isRead());
-
             // uncacheable accesses always allocate a new MSHR
 
             // Here we are using forward_time, modelling the latency of
             // a miss (outbound) just as forwardLatency, neglecting the
             // lookupLatency component.
+
+            // Here we allow allocating miss buffer for read requests
+            // and x86's clflush requests. A clflush request should be
+            // propagate through all levels of the cache system.
+
+            // Doing clflush in uncacheable regions might sound contradictory;
+            // however, it is entirely possible due to how the Linux kernel
+            // handle page property changes. When a linux kernel wants to
+            // change a page property, it flushes the related cache lines. The
+            // kernel might change the page property before flushing the cache
+            // lines. This results in the clflush might occur in an uncacheable
+            // region, where the kernel marks a region uncacheable before
+            // flushing. clflush results in a CleanInvalidReq.
+            assert(pkt->isRead() || pkt->isCleanInvalidateRequest());
             allocateMissBuffer(pkt, forward_time);
         }
 
@@ -709,8 +722,9 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
         // don't need to respond now, so pop it off to prevent the loop
         // below from generating another response.
         assert(initial_tgt->pkt->cmd == MemCmd::LockedRMWReadReq);
-        mshr->popTarget();
         delete initial_tgt->pkt;
+        initial_tgt->pkt = nullptr;
+        mshr->popTarget();
         initial_tgt = nullptr;
     }
 
@@ -849,7 +863,7 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
                 }
                 // not a cache fill, just forwarding response
                 // responseLatency is the latency of the return path
-                // from lower level cahces/memory to the core.
+                // from lower level caches/memory to the core.
                 completion_time += clockEdge(responseLatency) +
                     pkt->payloadDelay;
                 if (!is_error) {
@@ -1256,7 +1270,7 @@ Cache::recvTimingSnoopReq(PacketPtr pkt)
     }
 
     bool is_secure = pkt->isSecure();
-    CacheBlk *blk = tags->findBlock(pkt->getAddr(), is_secure);
+    CacheBlk *blk = tags->findBlock({pkt->getAddr(), is_secure});
 
     Addr blk_addr = pkt->getBlockAddr(blkSize);
     MSHR *mshr = mshrQueue.findMatch(blk_addr, is_secure);
@@ -1371,7 +1385,7 @@ Cache::recvAtomicSnoop(PacketPtr pkt)
         return 0;
     }
 
-    CacheBlk *blk = tags->findBlock(pkt->getAddr(), pkt->isSecure());
+    CacheBlk *blk = tags->findBlock({pkt->getAddr(), pkt->isSecure()});
     uint32_t snoop_delay = handleSnoop(pkt, blk, false, false, false);
     return snoop_delay + lookupLatency * clockPeriod();
 }
@@ -1417,7 +1431,7 @@ Cache::sendMSHRQueuePacket(MSHR* mshr)
 
         // we should never have hardware prefetches to allocated
         // blocks
-        assert(!tags->findBlock(mshr->blkAddr, mshr->isSecure));
+        assert(!tags->findBlock({mshr->blkAddr, mshr->isSecure}));
 
         // We need to check the caches above us to verify that
         // they don't have a copy of this block in the dirty state

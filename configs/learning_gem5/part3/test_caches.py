@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2017 Jason Power
 # All rights reserved.
 #
@@ -25,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" This file creates a set of Ruby caches, the Ruby network, and a simple
+"""This file creates a set of Ruby caches, the Ruby network, and a simple
 point-to-point topology for the RubyRandomTester to use.
 See Part 3 in the Learning gem5 book:
 http://gem5.org/documentation/learning_gem5/part3/MSIintro
@@ -35,20 +34,23 @@ IMPORTANT: If you modify this file, it's likely that the Learning gem5 book
 
 """
 
+from msi_caches import (
+    DirController,
+    L1Cache,
+    MyNetwork,
+)
+
 from m5.defines import buildEnv
-from m5.util import fatal
-
 from m5.objects import *
-
-from msi_caches import L1Cache, DirController, MyNetwork
+from m5.util import fatal
 
 
 class TestCacheSystem(RubySystem):
     def __init__(self):
-        if buildEnv["PROTOCOL"] != "MSI":
+        if not "RUBY_PROTOCOL_MSI" in buildEnv:
             fatal("This system assumes MSI from learning gem5!")
 
-        super(TestCacheSystem, self).__init__()
+        super().__init__()
 
     def setup(self, system, tester, mem_ctrls):
         """Set up the Ruby cache subsystem. Note: This can't be done in the
@@ -77,6 +79,7 @@ class TestCacheSystem(RubySystem):
                 # I/D cache is combined and grab from ctrl
                 dcache=self.controllers[i].cacheMemory,
                 clk_domain=self.clk_domain,
+                ruby_system=self,
             )
             for i in range(num_testers)
         ]
@@ -93,7 +96,7 @@ class TestCacheSystem(RubySystem):
 
         # Set up a proxy port for the system_port. Used for load binaries and
         # other functional-only things.
-        self.sys_port_proxy = RubyPortProxy()
+        self.sys_port_proxy = RubyPortProxy(ruby_system=self)
         system.system_port = self.sys_port_proxy.in_ports
 
         # Connect up the sequencers to the random tester

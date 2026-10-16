@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2015 Jason Power
 # All rights reserved.
 #
@@ -25,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" This file creates a set of Ruby caches, the Ruby network, and a simple
+"""This file creates a set of Ruby caches, the Ruby network, and a simple
 point-to-point topology.
 See Part 3 in the Learning gem5 book:
 http://gem5.org/Documentation/learning_gem5/part3/MSIintro
@@ -40,17 +39,19 @@ IMPORTANT: If you modify this file, it's likely that the Learning gem5 book
 import math
 
 from m5.defines import buildEnv
-from m5.util import fatal, panic
-
 from m5.objects import *
+from m5.util import (
+    fatal,
+    panic,
+)
 
 
 class MyCacheSystem(RubySystem):
     def __init__(self):
-        if buildEnv["PROTOCOL"] != "MI_example":
+        if "MI_example" not in buildEnv:
             fatal("This system assumes MI_example!")
 
-        super(MyCacheSystem, self).__init__()
+        super().__init__()
 
     def setup(self, system, cpus, mem_ctrls):
         """Set up the Ruby cache subsystem. Note: This can't be done in the
@@ -83,6 +84,7 @@ class MyCacheSystem(RubySystem):
                 # I/D cache is combined and grab from ctrl
                 dcache=self.controllers[i].cacheMemory,
                 clk_domain=self.controllers[i].clk_domain,
+                ruby_system=self,
             )
             for i in range(len(cpus))
         ]
@@ -107,7 +109,7 @@ class MyCacheSystem(RubySystem):
             self.sequencers[i].connectCpuPorts(cpu)
 
 
-class L1Cache(L1Cache_Controller):
+class L1Cache(MI_example_L1Cache_Controller):
 
     _version = 0
 
@@ -120,12 +122,14 @@ class L1Cache(L1Cache_Controller):
         """CPUs are needed to grab the clock domain and system is needed for
         the cache block size.
         """
-        super(L1Cache, self).__init__()
+        super().__init__()
 
         self.version = self.versionCount()
         # This is the cache memory object that stores the cache data and tags
         self.cacheMemory = RubyCache(
-            size="16kB", assoc=8, start_index_bit=self.getBlockSizeBits(system)
+            size="16KiB",
+            assoc=8,
+            start_index_bit=self.getBlockSizeBits(system),
         )
         self.clk_domain = cpu.clk_domain
         self.send_evictions = self.sendEvicts(cpu)
@@ -162,7 +166,7 @@ class L1Cache(L1Cache_Controller):
         self.responseToCache.in_port = ruby_system.network.out_port
 
 
-class DirController(Directory_Controller):
+class DirController(MI_example_Directory_Controller):
 
     _version = 0
 
@@ -175,11 +179,13 @@ class DirController(Directory_Controller):
         """ranges are the memory ranges assigned to this controller."""
         if len(mem_ctrls) > 1:
             panic("This cache system can only be connected to one mem ctrl")
-        super(DirController, self).__init__()
+        super().__init__()
         self.version = self.versionCount()
         self.addr_ranges = ranges
         self.ruby_system = ruby_system
-        self.directory = RubyDirectoryMemory()
+        self.directory = RubyDirectoryMemory(
+            block_size=ruby_system.block_size_bytes
+        )
         # Connect this directory to the memory side.
         self.memory = mem_ctrls[0].port
         self.connectQueues(ruby_system)
@@ -204,7 +210,7 @@ class MyNetwork(SimpleNetwork):
     """A simple point-to-point network. This doesn't not use garnet."""
 
     def __init__(self, ruby_system):
-        super(MyNetwork, self).__init__()
+        super().__init__()
         self.netifs = []
         self.ruby_system = ruby_system
 

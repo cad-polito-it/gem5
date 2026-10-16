@@ -53,7 +53,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Stats, statistics);
 namespace statistics
 {
 
@@ -99,7 +98,7 @@ class Text : public Output
 
     // Implement Output
     bool valid() const override;
-    void begin() override;
+    void begin(const std::string &message = "") override;
     void end() override;
 };
 

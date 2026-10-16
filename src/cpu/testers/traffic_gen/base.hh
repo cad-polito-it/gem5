@@ -132,7 +132,7 @@ class BaseTrafficGen : public ClockedObject
       public:
 
         TrafficGenPort(const std::string& name, BaseTrafficGen& traffic_gen)
-            : RequestPort(name, &traffic_gen), trafficGen(traffic_gen)
+            : RequestPort(name), trafficGen(traffic_gen)
         { }
 
       protected:
@@ -320,8 +320,8 @@ class BaseTrafficGen : public ClockedObject
 
     std::shared_ptr<BaseGen> createStrided(
         Tick duration,
-        Addr start_addr, Addr end_addr, Addr blocksize,
-        Addr stride_size, int gen_id,
+        Addr start_addr, Addr end_addr, Addr offset,
+        Addr block_size, Addr superblock_size, Addr stride_size,
         Tick min_period, Tick max_period,
         uint8_t read_percent, Addr data_limit);
 

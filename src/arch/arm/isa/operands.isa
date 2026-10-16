@@ -1,5 +1,5 @@
 // -*- mode:c++ -*-
-// Copyright (c) 2010-2014, 2016-2018, 2021-2022 Arm Limited
+// Copyright (c) 2010-2014, 2016-2018, 2021-2022, 2024-2025 Arm Limited
 // All rights reserved
 //
 // The license below extends only to copyright in the software and shall
@@ -53,10 +53,15 @@ def operand_types {{
     'sf' : 'float',
     'df' : 'double',
     'vc' : 'ArmISA::VecRegContainer',
+    'mc' : 'ArmISA::MatRegContainer',
     # For operations that are implemented as a template
     'x' : 'TPElem',
     'xs' : 'TPSElem',
+    'xs1' : 'TPS1Elem',
+    'xs2' : 'TPS2Elem',
     'xd' : 'TPDElem',
+    'srcA' : 'TPSrcAElem',
+    'srcB' : 'TPSrcBElem',
     'pc' : 'ArmISA::VecPredRegContainer',
     'pb' : 'uint8_t'
 }};
@@ -98,6 +103,10 @@ let {{
     class VecPredReg(VecPredRegOp):
         def __init__(self, idx):
             super().__init__('pc', idx, sort_pri=srtNormal)
+
+    class MatrixReg(MatRegOp):
+        def __init__(self, idx, suffix=''):
+            super().__init__('mc', idx, 'IsMatrix', srtNormal)
 
     class IntRegNPC(IntRegOp):
         @overrideInOperand
@@ -257,9 +266,6 @@ let {{
         def __init__(self, idx, id=srtNormal, ctype='ud'):
             super().__init__(idx, id, ctype)
 
-    class CntrlRegNC(CntrlReg):
-        pass
-
     class PCStateReg(PCStateOp):
         def __init__(self, idx, id):
             super().__init__('ud', idx, (None, None, 'IsControl'), id)
@@ -304,6 +310,8 @@ def operands {{
     'PInt1': PIntReg('reg1'),
     'PInt2': PIntReg('reg2'),
     'PInt3': PIntReg('reg3'),
+    'SpDest': IntRegX64('spMapping(dest)'),
+    'SpOp1': IntRegX64('spMapping(op1)'),
 
     #Fixed index integer reg operands
     'SpMode': IntRegNPC('int_reg::regInMode((OperatingMode)regMode, '
@@ -446,16 +454,23 @@ def operands {{
 
     # Predicate register operands
     'GpOp': VecPredReg('gp'),
+    'GpOp1': VecPredReg('gp1'),
+    'GpOp2': VecPredReg('gp2'),
     'POp1': VecPredReg('op1'),
     'POp2': VecPredReg('op2'),
     'PDest': VecPredReg('dest'),
+    'PDest2': VecPredReg('dest2'),
     'PDestMerge': VecPredReg('dest'),
     'Ffr': VecPredReg('PREDREG_FFR'),
     'FfrAux': VecPredReg('PREDREG_FFR'),
     'PUreg0': VecPredReg('PREDREG_UREG0'),
 
+    # SME ZA Register:
+    'ZA': MatrixReg('0'),
+
     #Abstracted control reg operands
     'MiscDest': CntrlReg('dest'),
+    'MiscDest2': CntrlReg('dest2'),
     'MiscOp1': CntrlReg('op1'),
     'MiscNsBankedDest': CntrlNsBankedReg('dest'),
     'MiscNsBankedOp1': CntrlNsBankedReg('op1'),
@@ -465,17 +480,18 @@ def operands {{
     #Fixed index control regs
     'Cpsr': CntrlReg('MISCREG_CPSR', srtCpsr),
     'CpsrQ': CntrlReg('MISCREG_CPSR_Q', srtCpsr),
-    'Spsr': CntrlRegNC('MISCREG_SPSR'),
-    'Fpsr': CntrlRegNC('MISCREG_FPSR'),
-    'Fpsid': CntrlRegNC('MISCREG_FPSID'),
-    'Fpscr': CntrlRegNC('MISCREG_FPSCR'),
-    'FpscrQc': CntrlRegNC('MISCREG_FPSCR_QC'),
-    'FpscrExc': CntrlRegNC('MISCREG_FPSCR_EXC'),
+    'Spsr': CntrlReg('MISCREG_SPSR'),
+    'Fpsr': CntrlReg('MISCREG_FPSR'),
+    'Fpsid': CntrlReg('MISCREG_FPSID'),
+    'Fpscr': CntrlReg('MISCREG_FPSCR'),
+    'FpscrQc': CntrlReg('MISCREG_FPSCR_QC'),
+    'FpscrExc': CntrlReg('MISCREG_FPSCR_EXC'),
+    'Fpcr': CntrlReg('MISCREG_FPCR'),
     'Cpacr': CntrlReg('MISCREG_CPACR'),
     'Cpacr64': CntrlReg64('MISCREG_CPACR_EL1'),
-    'Fpexc': CntrlRegNC('MISCREG_FPEXC'),
+    'Fpexc': CntrlReg('MISCREG_FPEXC'),
     'Nsacr': CntrlReg('MISCREG_NSACR'),
-    'ElrHyp': CntrlRegNC('MISCREG_ELR_HYP'),
+    'ElrHyp': CntrlReg('MISCREG_ELR_HYP'),
     'Hcr': CntrlReg('MISCREG_HCR'),
     'Hcr64': CntrlReg64('MISCREG_HCR_EL2'),
     'CptrEl264': CntrlReg64('MISCREG_CPTR_EL2'),
@@ -483,11 +499,12 @@ def operands {{
     'Hstr': CntrlReg('MISCREG_HSTR'),
     'Scr': CntrlReg('MISCREG_SCR'),
     'Scr64': CntrlReg64('MISCREG_SCR_EL3'),
-    'Sctlr': CntrlRegNC('MISCREG_SCTLR'),
-    'SevMailbox': CntrlRegNC('MISCREG_SEV_MAILBOX'),
-    'LLSCLock': CntrlRegNC('MISCREG_LOCKFLAG'),
-    'Dczid' : CntrlRegNC('MISCREG_DCZID_EL0'),
-    'PendingDvm': CntrlRegNC('MISCREG_TLBINEEDSYNC'),
+    'Sctlr': CntrlReg('MISCREG_SCTLR'),
+    'SevMailbox': CntrlReg('MISCREG_SEV_MAILBOX'),
+    'LLSCLock': CntrlReg('MISCREG_LOCKFLAG'),
+    'Dczid' : CntrlReg('MISCREG_DCZID_EL0'),
+    'PendingDvm': CntrlReg('MISCREG_TLBINEEDSYNC'),
+    'Svcr' : CntrlReg('MISCREG_SVCR'),
 
     #Register fields for microops
     'URa' : IntReg('ura'),
@@ -511,7 +528,6 @@ def operands {{
     'IWNPC': PCStateReg('instIWNPC', srtPC),
     'Thumb': PCStateReg('thumb', srtPC),
     'NextThumb': PCStateReg('nextThumb', srtMode),
-    'NextJazelle': PCStateReg('nextJazelle', srtMode),
     'NextItState': PCStateReg('nextItstate', srtMode),
     'Itstate': PCStateReg('itstate', srtMode),
     'NextAArch64': PCStateReg('nextAArch64', srtMode),

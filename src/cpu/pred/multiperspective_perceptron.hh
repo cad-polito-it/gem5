@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2022-2023 The University of Edinburgh
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright 2019 Texas A&M University
  *
  * Redistribution and use in source and binary forms, with or without
@@ -42,7 +54,8 @@
 #include <array>
 #include <vector>
 
-#include "cpu/pred/bpred_unit.hh"
+#include "base/random.hh"
+#include "cpu/pred/conditional.hh"
 #include "params/MultiperspectivePerceptron.hh"
 
 namespace gem5
@@ -51,7 +64,7 @@ namespace gem5
 namespace branch_prediction
 {
 
-class MultiperspectivePerceptron : public BPredUnit
+class MultiperspectivePerceptron : public ConditionalPredictor
 {
   protected:
     /**
@@ -293,6 +306,8 @@ class MultiperspectivePerceptron : public BPredUnit
     static int xlat[];
     /** Transfer function for 5-width tables */
     static int xlat4[];
+
+    Random::RandomPtr rng = Random::genRandom();
 
     /** History data is kept for each thread */
     struct ThreadData
@@ -1048,14 +1063,15 @@ class MultiperspectivePerceptron : public BPredUnit
 
     void init() override;
 
-    void uncondBranch(ThreadID tid, Addr pc, void * &bp_history) override;
-    void squash(ThreadID tid, void *bp_history) override;
-    bool lookup(ThreadID tid, Addr instPC, void * &bp_history) override;
-    void update(ThreadID tid, Addr instPC, bool taken,
-            void *bp_history, bool squashed,
-            const StaticInstPtr & inst,
-            Addr corrTarget) override;
-    void btbUpdate(ThreadID tid, Addr branch_addr, void* &bp_history) override;
+    // Base class methods.
+    bool lookup(ThreadID tid, Addr branch_addr, void* &bp_history) override;
+    void updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
+                         Addr target, const StaticInstPtr &inst,
+                         void * &bp_history) override;
+    void update(ThreadID tid, Addr branch_addr, bool taken, void *&bp_history,
+                bool squashed, const StaticInstPtr & inst,
+                Addr corrTarget) override;
+    void squash(ThreadID tid, void * &bp_history) override;
 };
 
 } // namespace branch_prediction

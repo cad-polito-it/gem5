@@ -71,6 +71,7 @@ class UncoalescedTable
     ~UncoalescedTable() {}
 
     void insertPacket(PacketPtr pkt);
+    void insertReqType(PacketPtr pkt, RubyRequestType type);
     bool packetAvailable();
     void printRequestTable(std::stringstream& ss);
 
@@ -101,6 +102,8 @@ class UncoalescedTable
     std::map<InstSeqNum, PerInstPackets> instMap;
 
     std::map<InstSeqNum, int> instPktsRemaining;
+
+    std::map<InstSeqNum, RubyRequestType> reqTypeMap;
 };
 
 class CoalescedRequest
@@ -216,9 +219,9 @@ class GPUCoalescer : public RubyPort
     class GMTokenPort : public TokenResponsePort
     {
       public:
-        GMTokenPort(const std::string& name, ClockedObject *owner,
+        GMTokenPort(const std::string& name,
                     PortID id = InvalidPortID)
-            : TokenResponsePort(name, owner, id)
+            : TokenResponsePort(name, id)
         { }
         ~GMTokenPort() { }
 
@@ -288,14 +291,8 @@ class GPUCoalescer : public RubyPort
 
     void readCallback(Addr address,
                       MachineType mach,
-                      DataBlock& data);
-
-    void readCallback(Addr address,
-                      MachineType mach,
                       DataBlock& data,
-                      Cycles initialRequestTime,
-                      Cycles forwardRequestTime,
-                      Cycles firstResponseTime);
+                      bool externalHit);
 
     void readCallback(Addr address,
                       MachineType mach,
@@ -303,7 +300,16 @@ class GPUCoalescer : public RubyPort
                       Cycles initialRequestTime,
                       Cycles forwardRequestTime,
                       Cycles firstResponseTime,
-                      bool isRegion);
+                      bool externalHit);
+
+    void readCallback(Addr address,
+                      MachineType mach,
+                      DataBlock& data,
+                      Cycles initialRequestTime,
+                      Cycles forwardRequestTime,
+                      Cycles firstResponseTime,
+                      bool isRegion,
+                      bool externalHit);
 
     /* atomics need their own callback because the data
        might be const coming from SLICC */
@@ -334,6 +340,8 @@ class GPUCoalescer : public RubyPort
     void completeIssue();
 
     void insertKernel(int wavefront_id, PacketPtr pkt);
+
+    RubySystem *getRubySystem() { return m_ruby_system; }
 
     GMTokenPort& getGMTokenPort() { return gmTokenPort; }
 
@@ -389,13 +397,18 @@ class GPUCoalescer : public RubyPort
                      Cycles initialRequestTime,
                      Cycles forwardRequestTime,
                      Cycles firstResponseTime,
-                     bool isRegion);
-    void recordMissLatency(CoalescedRequest* crequest,
+                     bool isRegion,
+                     bool externalHit,
+                     bool mshrHitUnderMiss);
+
+    void recordStats(CoalescedRequest* crequest,
                            MachineType mach,
                            Cycles initialRequestTime,
                            Cycles forwardRequestTime,
                            Cycles firstResponseTime,
-                           bool success, bool isRegion);
+                           bool isRegion,
+                           bool mshrHitUnderMiss);
+
     void completeHitCallback(std::vector<PacketPtr> & mylist);
 
     virtual RubyRequestType getRequestType(PacketPtr pkt);
@@ -458,6 +471,18 @@ class GPUCoalescer : public RubyPort
 
     EventFunctionWrapper deadlockCheckEvent;
     bool assumingRfOCoherence;
+
+    struct GPUCoalescerStats : public statistics::Group
+    {
+        GPUCoalescerStats(statistics::Group *parent);
+        statistics::Scalar m_mshr_ld_hits_under_miss;
+        statistics::Scalar m_mshr_ld_misses;
+
+        statistics::Scalar m_mshr_st_misses;
+
+        statistics::Formula m_mshr_accesses;
+    } stats;
+
 
 // TODO - Need to update the following stats once the VIPER protocol
 //        is re-integrated.

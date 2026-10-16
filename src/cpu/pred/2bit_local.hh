@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2011, 2014 ARM Limited
+ * Copyright (c) 2022-2023 The University of Edinburgh
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -45,7 +46,7 @@
 
 #include "base/sat_counter.hh"
 #include "base/types.hh"
-#include "cpu/pred/bpred_unit.hh"
+#include "cpu/pred/conditional.hh"
 #include "params/LocalBP.hh"
 
 namespace gem5
@@ -61,7 +62,7 @@ namespace branch_prediction
  * predictor state that needs to be recorded or updated; the update can be
  * determined solely by the branch being taken or not taken.
  */
-class LocalBP : public BPredUnit
+class LocalBP : public ConditionalPredictor
 {
   public:
     /**
@@ -69,35 +70,21 @@ class LocalBP : public BPredUnit
      */
     LocalBP(const LocalBPParams &params);
 
-    virtual void uncondBranch(ThreadID tid, Addr pc, void * &bp_history);
+    // Overriding interface functions
+    bool lookup(ThreadID tid, Addr pc, void * &bp_history) override;
 
-    /**
-     * Looks up the given address in the branch predictor and returns
-     * a true/false value as to whether it is taken.
-     * @param branch_addr The address of the branch to look up.
-     * @param bp_history Pointer to any bp history state.
-     * @return Whether or not the branch is taken.
-     */
-    bool lookup(ThreadID tid, Addr branch_addr, void * &bp_history);
+    void branchPlaceholder(ThreadID tid, Addr pc, bool uncond,
+                           void * &bpHistory) override;
 
-    /**
-     * Updates the branch predictor to Not Taken if a BTB entry is
-     * invalid or not found.
-     * @param branch_addr The address of the branch to look up.
-     * @param bp_history Pointer to any bp history state.
-     * @return Whether or not the branch is taken.
-     */
-    void btbUpdate(ThreadID tid, Addr branch_addr, void * &bp_history);
+    void updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
+                         Addr target, const StaticInstPtr &inst,
+                         void * &bp_history) override;
 
-    /**
-     * Updates the branch predictor with the actual result of a branch.
-     * @param branch_addr The address of the branch to update.
-     * @param taken Whether or not the branch was taken.
-     */
-    void update(ThreadID tid, Addr branch_addr, bool taken, void *bp_history,
-                bool squashed, const StaticInstPtr & inst, Addr corrTarget);
+    void update(ThreadID tid, Addr pc, bool taken,
+                void * &bp_history, bool squashed,
+                const StaticInstPtr & inst, Addr target) override;
 
-    void squash(ThreadID tid, void *bp_history)
+    void squash(ThreadID tid, void * &bp_history) override
     { assert(bp_history == NULL); }
 
   private:

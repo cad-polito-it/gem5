@@ -1,4 +1,15 @@
 /*
+ * Copyright (c) 2024 ARM Limited
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2018, 2020 Inria
  * All rights reserved.
  *
@@ -40,10 +51,10 @@
 #include "base/intmath.hh"
 #include "base/logging.hh"
 #include "base/types.hh"
-#include "mem/cache/base.hh"
 #include "mem/cache/replacement_policies/base.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
 #include "mem/cache/tags/indexing_policies/base.hh"
+#include "mem/cache/tags/partitioning_policies/partition_manager.hh"
 
 namespace gem5
 {
@@ -65,6 +76,9 @@ SectorTags::SectorTags(const SectorTagsParams &p)
              "Block size must be at least 4 and a power of 2");
     fatal_if(!isPowerOf2(numBlocksPerSector),
              "# of blocks per sector must be non-zero and a power of 2");
+    warn_if(partitionManager,
+             "Using cache partitioning policies with sector and/or compressed "
+             "tags is not fully tested.");
 }
 
 void
@@ -106,12 +120,18 @@ SectorTags::tagsInit()
             // Set its index and sector offset
             blk->setSectorOffset(k);
 
+            // Register TagExtractor for SubBlk
+            blk->registerTagExtractor(genTagExtractor(indexingPolicy));
+
             // Update block index
             ++blk_index;
         }
 
         // Link block to indexing policy
         indexingPolicy->setEntry(sec_blk, sec_blk_index);
+
+        // Register TagExtractor for SecBlk
+        sec_blk->registerTagExtractor(genTagExtractor(indexingPolicy));
     }
 }
 
@@ -141,7 +161,7 @@ SectorTags::invalidate(CacheBlk *blk)
 CacheBlk*
 SectorTags::accessBlock(const PacketPtr pkt, Cycles &lat)
 {
-    CacheBlk *blk = findBlock(pkt->getAddr(), pkt->isSecure());
+    CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
 
     // Access all tags in parallel, hence one in each way.  The data side
     // either accesses all blocks in parallel, or one block sequentially on
@@ -247,23 +267,20 @@ SectorTags::moveBlock(CacheBlk *src_blk, CacheBlk *dest_blk)
 }
 
 CacheBlk*
-SectorTags::findBlock(Addr addr, bool is_secure) const
+SectorTags::findBlock(const CacheBlk::KeyType &key) const
 {
-    // Extract sector tag
-    const Addr tag = extractTag(addr);
-
     // The address can only be mapped to a specific location of a sector
     // due to sectors being composed of contiguous-address entries
-    const Addr offset = extractSectorOffset(addr);
+    const Addr offset = extractSectorOffset(key.address);
 
     // Find all possible sector entries that may contain the given address
     const std::vector<ReplaceableEntry*> entries =
-        indexingPolicy->getPossibleEntries(addr);
+        indexingPolicy->getPossibleEntries(key);
 
     // Search for block
     for (const auto& sector : entries) {
         auto blk = static_cast<SectorBlk*>(sector)->blks[offset];
-        if (blk->matchTag(tag, is_secure)) {
+        if (blk->match(key)) {
             return blk;
         }
     }
@@ -273,19 +290,24 @@ SectorTags::findBlock(Addr addr, bool is_secure) const
 }
 
 CacheBlk*
-SectorTags::findVictim(Addr addr, const bool is_secure, const std::size_t size,
-                       std::vector<CacheBlk*>& evict_blks)
+SectorTags::findVictim(const CacheBlk::KeyType &key,
+                       const std::size_t size,
+                       std::vector<CacheBlk*>& evict_blks,
+                       const uint64_t partition_id)
 {
     // Get possible entries to be victimized
-    const std::vector<ReplaceableEntry*> sector_entries =
-        indexingPolicy->getPossibleEntries(addr);
+    std::vector<ReplaceableEntry*> sector_entries =
+        indexingPolicy->getPossibleEntries(key);
+
+    // Filter entries based on PartitionID
+    if (partitionManager)
+        partitionManager->filterByPartition(sector_entries, partition_id);
 
     // Check if the sector this address belongs to has been allocated
-    Addr tag = extractTag(addr);
     SectorBlk* victim_sector = nullptr;
     for (const auto& sector : sector_entries) {
         SectorBlk* sector_blk = static_cast<SectorBlk*>(sector);
-        if (sector_blk->matchTag(tag, is_secure)) {
+        if (sector_blk->match(key)) {
             victim_sector = sector_blk;
             break;
         }
@@ -293,17 +315,24 @@ SectorTags::findVictim(Addr addr, const bool is_secure, const std::size_t size,
 
     // If the sector is not present
     if (victim_sector == nullptr){
+        // check if partitioning policy limited allocation and if true - return
+        // this assumes that sector_entries would not be empty if partitioning
+        // policy is not in place
+        if (sector_entries.size() == 0){
+            return nullptr;
+        }
         // Choose replacement victim from replacement candidates
         victim_sector = static_cast<SectorBlk*>(replacementPolicy->getVictim(
                                                 sector_entries));
     }
 
     // Get the entry of the victim block within the sector
-    SectorSubBlk* victim = victim_sector->blks[extractSectorOffset(addr)];
+    SectorSubBlk* victim = victim_sector->blks[
+        extractSectorOffset(key.address)];
 
     // Get evicted blocks. Blocks are only evicted if the sectors mismatch and
     // the currently existing sector is valid.
-    if (victim_sector->matchTag(tag, is_secure)) {
+    if (victim_sector->match(key)) {
         // It would be a hit if victim was valid, and upgrades do not call
         // findVictim, so it cannot happen
         assert(!victim->isValid());
@@ -334,7 +363,8 @@ SectorTags::regenerateBlkAddr(const CacheBlk* blk) const
     const SectorSubBlk* blk_cast = static_cast<const SectorSubBlk*>(blk);
     const SectorBlk* sec_blk = blk_cast->getSectorBlock();
     const Addr sec_addr =
-        indexingPolicy->regenerateAddr(blk->getTag(), sec_blk);
+        indexingPolicy->regenerateAddr(
+            {blk->getTag(), blk->isSecure()}, sec_blk);
     return sec_addr | ((Addr)blk_cast->getSectorOffset() << sectorShift);
 }
 
@@ -356,14 +386,6 @@ SectorTags::SectorTagsStats::regStats()
         evictionsReplacement.subname(i, std::to_string(i));
         evictionsReplacement.subdesc(i, "Number of replacements that caused " \
             "the eviction of " + std::to_string(i) + " blocks");
-    }
-}
-
-void
-SectorTags::forEachBlk(std::function<void(CacheBlk &)> visitor)
-{
-    for (SectorSubBlk& blk : blks) {
-        visitor(blk);
     }
 }
 

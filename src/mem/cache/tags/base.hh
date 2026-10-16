@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014,2016-2019 ARM Limited
+ * Copyright (c) 2012-2014, 2016-2019, 2023-2024 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -56,6 +56,7 @@
 #include "base/statistics.hh"
 #include "base/types.hh"
 #include "mem/cache/cache_blk.hh"
+#include "mem/cache/tags/indexing_policies/base.hh"
 #include "mem/packet.hh"
 #include "params/BaseTags.hh"
 #include "sim/clocked_object.hh"
@@ -64,7 +65,6 @@ namespace gem5
 {
 
 class System;
-class IndexingPolicy;
 class ReplaceableEntry;
 
 /**
@@ -86,7 +86,10 @@ class BaseTags : public ClockedObject
     System *system;
 
     /** Indexing policy */
-    BaseIndexingPolicy *indexingPolicy;
+    TaggedIndexingPolicy *indexingPolicy;
+
+    /** Partitioning manager */
+    partitioning_policy::PartitionManager *partitionManager;
 
     /**
      * The number of tags that need to be touched to meet the warmup
@@ -158,7 +161,7 @@ class BaseTags : public ClockedObject
     } stats;
 
   public:
-    typedef BaseTagsParams Params;
+    PARAMS(BaseTags);
     BaseTags(const Params &p);
 
     /**
@@ -196,7 +199,7 @@ class BaseTags : public ClockedObject
      * @param is_secure True if the target memory space is secure.
      * @return Pointer to the cache block.
      */
-    virtual CacheBlk *findBlock(Addr addr, bool is_secure) const;
+    virtual CacheBlk *findBlock(const CacheBlk::KeyType &key) const;
 
     /**
      * Find a block given set and way.
@@ -276,11 +279,13 @@ class BaseTags : public ClockedObject
      * @param is_secure True if the target memory space is secure.
      * @param size Size, in bits, of new block to allocate.
      * @param evict_blks Cache blocks to be evicted.
+     * @param partition_id Partition ID for resource management.
      * @return Cache block to be replaced.
      */
-    virtual CacheBlk* findVictim(Addr addr, const bool is_secure,
+    virtual CacheBlk* findVictim(const CacheBlk::KeyType &key,
                                  const std::size_t size,
-                                 std::vector<CacheBlk*>& evict_blks) = 0;
+                                 std::vector<CacheBlk*>& evict_blks,
+                                 const uint64_t partition_id=0) = 0;
 
     /**
      * Access block and update replacement data. May not succeed, in which case
@@ -336,7 +341,7 @@ class BaseTags : public ClockedObject
      *
      * @param visitor Visitor to call on each block.
      */
-    virtual void forEachBlk(std::function<void(CacheBlk &)> visitor) = 0;
+    void forEachBlk(std::function<void(CacheBlk &)> visitor);
 
     /**
      * Find if any of the blocks satisfies a condition

@@ -52,6 +52,7 @@
 #include "mem/port.hh"
 #include "params/BaseCPU.hh"
 #include "sim/full_system.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -120,6 +121,20 @@ ThreadContext::compare(ThreadContext *one, ThreadContext *two)
             panic("Pred reg idx %d doesn't match, one: %s, two: %s",
                   id.index(), vec_pred_class->valString(pred1.data()),
                   vec_pred_class->valString(pred2.data()));
+        }
+    }
+
+    // Then loop through the matrix registers.
+    const auto *mat_class = regClasses.at(MatRegClass);
+    std::vector<uint8_t> mat1(mat_class->regBytes());
+    std::vector<uint8_t> mat2(mat_class->regBytes());
+    for (auto &id: *regClasses.at(MatRegClass)) {
+        one->getReg(id, mat1.data());
+        two->getReg(id, mat2.data());
+        if (mat1 != mat2) {
+            panic("Mat reg idx %d doesn't match, one: %#x, two: %#x",
+                  id.index(), mat_class->valString(mat1.data()),
+                  mat_class->valString(mat2.data()));
         }
     }
 
@@ -217,14 +232,14 @@ serialize(const ThreadContext &tc, CheckpointOut &cp)
         const size_t reg_count = reg_class->numRegs();
         const size_t array_bytes = reg_bytes * reg_count;
 
-        uint8_t regs[array_bytes];
-        auto *reg_ptr = regs;
+        auto regs = std::make_unique<uint8_t[]>(array_bytes);
+        auto *reg_ptr = regs.get();
         for (const auto &id: *reg_class) {
             tc.getReg(id, reg_ptr);
             reg_ptr += reg_bytes;
         }
 
-        arrayParamOut(cp, std::string("regs.") + reg_class->name(), regs,
+        arrayParamOut(cp, std::string("regs.") + reg_class->name(), regs.get(),
                 array_bytes);
     }
 
@@ -245,11 +260,11 @@ unserialize(ThreadContext &tc, CheckpointIn &cp)
         const size_t reg_count = reg_class->numRegs();
         const size_t array_bytes = reg_bytes * reg_count;
 
-        uint8_t regs[array_bytes];
-        arrayParamIn(cp, std::string("regs.") + reg_class->name(), regs,
+        auto regs = std::make_unique<uint8_t[]>(array_bytes);
+        arrayParamIn(cp, std::string("regs.") + reg_class->name(), regs.get(),
                 array_bytes);
 
-        auto *reg_ptr = regs;
+        auto *reg_ptr = regs.get();
         for (const auto &id: *reg_class) {
             tc.setReg(id, reg_ptr);
             reg_ptr += reg_bytes;

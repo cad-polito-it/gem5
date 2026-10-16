@@ -140,7 +140,9 @@ packet2payload(PacketPtr packet)
         // Sync the address which could have changed.
         trans = &tlmSenderState->trans;
         trans->set_address(packet->getAddr());
-        trans->acquire();
+        if (trans->has_mm()) {
+            trans->acquire();
+        }
         // Apply all conversion steps necessary in this specific setup.
         for (auto &step : extraPacketToPayloadSteps) {
             step(packet, *trans);
@@ -152,6 +154,7 @@ packet2payload(PacketPtr packet)
     trans->acquire();
 
     trans->set_address(packet->getAddr());
+    trans->set_response_status(tlm::TLM_INCOMPLETE_RESPONSE);
 
     /* Check if this transaction was allocated by mm */
     sc_assert(trans->has_mm());
@@ -231,10 +234,10 @@ Gem5ToTlmBridge<BITWIDTH>::pec(
         }
     }
     if (phase == tlm::BEGIN_RESP) {
-        auto &extension = Gem5SystemC::Gem5Extension::getExtension(trans);
-        auto packet = extension.getPacket();
+        PacketPtr packet = packetMap[&trans];
 
         sc_assert(!blockingResponse);
+        sc_assert(packet);
 
         bool need_retry = false;
 
@@ -252,12 +255,13 @@ Gem5ToTlmBridge<BITWIDTH>::pec(
         if (need_retry) {
             blockingResponse = &trans;
         } else {
-            if (phase == tlm::BEGIN_RESP) {
-                // Send END_RESP and we're finished:
-                tlm::tlm_phase fw_phase = tlm::END_RESP;
-                sc_core::sc_time delay = sc_core::SC_ZERO_TIME;
-                socket->nb_transport_fw(trans, fw_phase, delay);
-                // Release the transaction with all the extensions.
+            // Send END_RESP and we're finished:
+            tlm::tlm_phase fw_phase = tlm::END_RESP;
+            sc_core::sc_time delay = sc_core::SC_ZERO_TIME;
+            socket->nb_transport_fw(trans, fw_phase, delay);
+            // Release the transaction with all the extensions.
+            packetMap.erase(&trans);
+            if (trans.has_mm()) {
                 trans.release();
             }
         }
@@ -284,7 +288,10 @@ Gem5ToTlmBridge<BITWIDTH>::getBackdoor(tlm::tlm_generic_payload &trans)
 
     // If the target gave us one, translate it to a gem5 MemBackdoor and
     // store it in our cache.
-    AddrRange dmi_r(dmi_data.get_start_address(), dmi_data.get_end_address());
+    // The address range presented by tlm::tlm_dmi is inclusive, so when
+    // converting to gem5::MemBackdoor, we should + 1 on end address.
+    AddrRange dmi_r(dmi_data.get_start_address(),
+                    dmi_data.get_end_address() + 1);
     auto backdoor = new MemBackdoor(
             dmi_r, dmi_data.get_dmi_ptr(), MemBackdoor::NoAccess);
     backdoor->readable(dmi_data.is_read_allowed());
@@ -316,7 +323,9 @@ Gem5ToTlmBridge<BITWIDTH>::recvAtomic(PacketPtr packet)
     if (packet->needsResponse())
         setPacketResponse(packet, *trans);
 
-    trans->release();
+    if (trans->has_mm()) {
+        trans->release();
+    }
 
     return delay.value();
 }
@@ -350,7 +359,9 @@ Gem5ToTlmBridge<BITWIDTH>::recvAtomicBackdoor(
     if (packet->needsResponse())
         packet->makeResponse();
 
-    trans->release();
+    if (trans->has_mm()) {
+        trans->release();
+    }
 
     return delay.value();
 }
@@ -418,7 +429,7 @@ Gem5ToTlmBridge<BITWIDTH>::recvTimingReq(PacketPtr packet)
      *       payload delay and comparing it to the time between BEGIN_REQ and
      *       END_REQ. Then, a warning should be printed.
      */
-    auto delay = sc_core::sc_time::from_value(packet->payloadDelay);
+    auto delay = sc_core::sc_time::from_value(packet->headerDelay);
     // Reset the delays
     packet->payloadDelay = 0;
     packet->headerDelay = 0;
@@ -433,11 +444,13 @@ Gem5ToTlmBridge<BITWIDTH>::recvTimingReq(PacketPtr packet)
         sc_assert(phase == tlm::BEGIN_REQ);
         // Accepted but is now blocking until END_REQ (exclusion rule).
         blockingRequest = trans;
+        packetMap.emplace(trans, packet);
     } else if (status == tlm::TLM_UPDATED) {
         // The Timing annotation must be honored:
         sc_assert(phase == tlm::END_REQ || phase == tlm::BEGIN_RESP);
         // Accepted but is now blocking until END_REQ (exclusion rule).
         blockingRequest = trans;
+        packetMap.emplace(trans, packet);
         auto cb = [this, trans, phase]() { pec(*trans, phase); };
         auto event = new EventFunctionWrapper(
                 cb, "pec", true, getPriorityOfTlmPhase(phase));
@@ -445,7 +458,9 @@ Gem5ToTlmBridge<BITWIDTH>::recvTimingReq(PacketPtr packet)
     } else if (status == tlm::TLM_COMPLETED) {
         // Transaction is over nothing has do be done.
         sc_assert(phase == tlm::END_RESP);
-        trans->release();
+        if (trans->has_mm()) {
+            trans->release();
+        }
     }
 
     return true;
@@ -477,8 +492,9 @@ Gem5ToTlmBridge<BITWIDTH>::recvRespRetry()
 
     tlm::tlm_generic_payload *trans = blockingResponse;
     blockingResponse = nullptr;
-    PacketPtr packet =
-        Gem5SystemC::Gem5Extension::getExtension(trans).getPacket();
+
+    PacketPtr packet = packetMap[trans];
+    sc_assert(packet);
 
     bool need_retry = !bridgeResponsePort.sendTimingResp(packet);
 
@@ -488,7 +504,10 @@ Gem5ToTlmBridge<BITWIDTH>::recvRespRetry()
     tlm::tlm_phase phase = tlm::END_RESP;
     socket->nb_transport_fw(*trans, phase, delay);
     // Release transaction with all the extensions
-    trans->release();
+    packetMap.erase(trans);
+    if (trans->has_mm()) {
+        trans->release();
+    }
 }
 
 // Similar to TLM's debug transport.
@@ -505,6 +524,33 @@ Gem5ToTlmBridge<BITWIDTH>::recvFunctional(PacketPtr packet)
         SC_REPORT_FATAL("Gem5ToTlmBridge",
                 "debug transport was not completed");
     }
+
+    if (trans->has_mm()) {
+        trans->release();
+    }
+}
+
+template <unsigned int BITWIDTH>
+void
+Gem5ToTlmBridge<BITWIDTH>::recvMemBackdoorReq(const MemBackdoorReq &req,
+        MemBackdoorPtr &backdoor)
+{
+    // Create a transaction to send along to TLM's get_direct_mem_ptr.
+    tlm::tlm_generic_payload *trans = mm.allocate();
+    trans->acquire();
+    trans->set_address(req.range().start());
+    trans->set_data_length(req.range().size());
+    trans->set_streaming_width(req.range().size());
+    trans->set_data_ptr(nullptr);
+
+    if (req.writeable())
+        trans->set_command(tlm::TLM_WRITE_COMMAND);
+    else if (req.readable())
+        trans->set_command(tlm::TLM_READ_COMMAND);
+    else
+        trans->set_command(tlm::TLM_IGNORE_COMMAND);
+
+    backdoor = getBackdoor(*trans);
 
     trans->release();
 }

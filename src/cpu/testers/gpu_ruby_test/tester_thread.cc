@@ -42,6 +42,7 @@ TesterThread::TesterThread(const Params &p)
       : ClockedObject(p),
         threadEvent(this, "TesterThread tick"),
         deadlockCheckEvent(this),
+        cacheLineSize(p.cache_line_size),
         threadId(p.thread_id),
         numLanes(p.num_lanes),
         tester(nullptr), addrManager(nullptr), port(nullptr),
@@ -144,7 +145,8 @@ TesterThread::attachTesterThreadToPorts(ProtocolTester *_tester,
 void
 TesterThread::issueNewEpisode()
 {
-    int num_reg_loads = random() % tester->getEpisodeLength();
+    int num_reg_loads = \
+        rng->random<unsigned int>() % tester->getEpisodeLength();
     int num_reg_stores = tester->getEpisodeLength() - num_reg_loads;
 
     // create a new episode
@@ -381,7 +383,7 @@ TesterThread::validateAtomicResp(Location loc, int lane, Value ret_val)
         ss << threadName << ": Atomic Op returned unexpected value\n"
            << "\tEpisode " << curEpisode->getEpisodeId() << "\n"
            << "\tLane ID " << lane << "\n"
-           << "\tAddress " << ruby::printAddress(addr) << "\n"
+           << "\tAddress " << printAddress(addr) << "\n"
            << "\tAtomic Op's return value " << ret_val << "\n";
 
         // print out basic info
@@ -407,7 +409,7 @@ TesterThread::validateLoadResp(Location loc, int lane, Value ret_val)
            << "\tTesterThread " << threadId << "\n"
            << "\tEpisode " << curEpisode->getEpisodeId() << "\n"
            << "\tLane ID " << lane << "\n"
-           << "\tAddress " << ruby::printAddress(addr) << "\n"
+           << "\tAddress " << printAddress(addr) << "\n"
            << "\tLoaded value " << ret_val << "\n"
            << "\tLast writer " << addrManager->printLastWriter(loc) << "\n";
 
@@ -465,7 +467,7 @@ TesterThread::printOutstandingReqs(const OutstandingReqTable& table,
 
     for (const auto& m : table) {
         for (const auto& req : m.second) {
-            ss << "\t\t\tAddr " << ruby::printAddress(m.first)
+            ss << "\t\t\tAddr " << printAddress(m.first)
                << ": delta (curCycle - issueCycle) = "
                << (cur_cycle - req.issueCycle) << std::endl;
         }
@@ -484,6 +486,12 @@ TesterThread::printAllOutstandingReqs(std::stringstream& ss) const
     printOutstandingReqs(outstandingAtomics, ss);
     ss << "\t\tNumber of outstanding acquires & releases: "
        << pendingFenceCount << std::endl;
+}
+
+std::string
+TesterThread::printAddress(Addr addr) const
+{
+    return ruby::printAddress(addr, floorLog2(cacheLineSize));
 }
 
 } // namespace gem5

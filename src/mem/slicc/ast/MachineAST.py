@@ -26,7 +26,10 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from slicc.ast.DeclAST import DeclAST
-from slicc.symbols import StateMachine, Type
+from slicc.symbols import (
+    StateMachine,
+    Type,
+)
 
 
 class MachineAST(DeclAST):
@@ -39,18 +42,20 @@ class MachineAST(DeclAST):
         self.decls = decls
 
     def __repr__(self):
-        return "[Machine: %r]" % self.ident
+        return f"[Machine: {self.ident!r}]"
 
     def files(self, parent=None):
-        s = set(
-            (
-                "%s_Controller.cc" % self.ident,
-                "%s_Controller.hh" % self.ident,
-                "%s_Controller.py" % self.ident,
-                "%s_Transitions.cc" % self.ident,
-                "%s_Wakeup.cc" % self.ident,
-            )
-        )
+        file_prefix = f"{self.slicc.protocol}/{self.ident}"
+        # Can't have multiple python simobject files with the same name
+        # So, we have to prepend the protocol name to the .py file
+        py_prefix = f"{self.slicc.protocol}/{self.slicc.protocol}_{self.ident}"
+        s = {
+            f"{file_prefix}_Controller.cc",
+            f"{file_prefix}_Controller.hh",
+            f"{py_prefix}_Controller.py",
+            f"{file_prefix}_Transitions.cc",
+            f"{file_prefix}_Wakeup.cc",
+        }
 
         s |= self.decls.files(self.ident)
         return s
@@ -83,4 +88,4 @@ class MachineAST(DeclAST):
         mtype = self.ident
         machine_type = self.symtab.find("MachineType", Type)
         if not machine_type.checkEnum(mtype):
-            self.error("Duplicate machine name: %s:%s" % (machine_type, mtype))
+            self.error(f"Duplicate machine name: {machine_type}:{mtype}")

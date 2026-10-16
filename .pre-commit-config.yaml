@@ -1,4 +1,5 @@
-# Copyright (c) 2022 Arm Limited
+---
+# Copyright (c) 2022, 2025 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -33,43 +34,58 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-minimum_pre_commit_version: "2.18"
+minimum_pre_commit_version: '2.18'
 
 default_language_version:
-  python: python3
+    python: python3
 
 exclude: |
-  (?x)^(
-    ext/.*|
-    build/.*|
-    src/systemc/ext/.*|
-    src/systemc/tests/.*/.*|
-    src/python/m5/ext/pyfdt/.*|
-    tests/.*/ref/.*
-  )$
+    (?x)^(
+      ext/(?!testlib/).*|
+      build/.*|
+      src/systemc/ext/.*|
+      src/systemc/tests/.*/.*|
+      src/python/m5/ext/pyfdt/.*|
+      tests/.*/ref/.*
+    )$
 
-default_stages: [commit]
+default_stages: [pre-commit]
 
 repos:
-- repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.3.0
-  hooks:
-  - id: end-of-file-fixer
-  - id: check-json
-  - id: check-yaml
-  - id: check-added-large-files
-  - id: mixed-line-ending
-    args: [--fix=lf]
-  - id: check-case-conflict
-- repo: https://github.com/psf/black
-  rev: 22.6.0
-  hooks:
-    - id: black
-- repo: local
-  hooks:
-  - id: gerrit-commit-msg-job
-    name: gerrit commit message job
-    entry: util/gerrit-commit-msg-hook
-    language: system
-    stages: [commit-msg]
-    description: 'Adds Change-ID to the commit message. Needed by Gerrit.'
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v6.0.0
+      hooks:
+          - id: end-of-file-fixer
+          - id: check-json
+          - id: check-yaml
+          - id: check-added-large-files
+          - id: mixed-line-ending
+            args: [--fix=lf]
+          - id: check-ast
+          - id: check-case-conflict
+          - id: check-merge-conflict
+          - id: check-symlinks
+          - id: destroyed-symlinks
+          - id: requirements-txt-fixer
+    - repo: https://github.com/PyCQA/isort
+      rev: 7.0.0
+      hooks:
+          - id: isort
+    - repo: https://github.com/jumanjihouse/pre-commit-hook-yamlfmt
+      rev: 0.2.3
+      hooks:
+          - id: yamlfmt
+    - repo: https://github.com/psf/black-pre-commit-mirror
+      rev: 25.11.0
+      hooks:
+          - id: black
+    - repo: https://github.com/asottile/pyupgrade
+      rev: v3.21.2
+      hooks:
+          - id: pyupgrade
+            # Python 3.8 is the earliest version supported.
+            # We therefore conform to the standards compatible with 3.8+.
+            args: [--py38-plus]
+
+ci:
+    autoupdate_branch: develop

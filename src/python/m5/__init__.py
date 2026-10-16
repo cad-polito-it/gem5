@@ -30,28 +30,30 @@
 
 try:
     # Try to import a native module
-    import _m5.core
+    from _m5 import core
 
     # Try to grab something from it in case demandimport is being used
-    _m5.core.curTick
+    core.curTick
     in_gem5 = True
 except ImportError:
     # The import failed, we're being called from the build system
     in_gem5 = False
 
 if in_gem5:
-    from . import SimObject
-    from . import core
-    from . import defines
-    from . import objects
-    from . import params
-    from . import stats
+    from . import (
+        SimObject,
+        core,
+        defines,
+        objects,
+        params,
+        stats,
+    )
 
     if defines.buildEnv["USE_SYSTEMC"]:
         from . import systemc
         from . import tlm
+    from . import simulate as _simulate_module
     from . import util
-
     from .event import *
     from .main import main
     from .simulate import *

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018 ARM Limited
+ * Copyright (c) 2016-2018, 2025 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -53,31 +53,34 @@ PhysRegFile::PhysRegFile(unsigned _numPhysicalIntRegs,
                          unsigned _numPhysicalFloatRegs,
                          unsigned _numPhysicalVecRegs,
                          unsigned _numPhysicalVecPredRegs,
+                         unsigned _numPhysicalMatRegs,
                          unsigned _numPhysicalCCRegs,
                          const BaseISA::RegClasses &reg_classes)
     : intRegFile(*reg_classes.at(IntRegClass), _numPhysicalIntRegs),
       floatRegFile(*reg_classes.at(FloatRegClass), _numPhysicalFloatRegs),
       vectorRegFile(*reg_classes.at(VecRegClass), _numPhysicalVecRegs),
-      vectorElemRegFile(*reg_classes.at(VecElemClass), _numPhysicalVecRegs * (
-                  reg_classes.at(VecElemClass)->numRegs() /
-                  reg_classes.at(VecRegClass)->numRegs())),
+      vectorElemRegFile(*reg_classes.at(VecElemClass),
+                        _numPhysicalVecRegs *
+                            (reg_classes.at(VecElemClass)->numRegs() /
+                             reg_classes.at(VecRegClass)->numRegs())),
       vecPredRegFile(*reg_classes.at(VecPredRegClass),
-              _numPhysicalVecPredRegs),
+                     _numPhysicalVecPredRegs),
+      matRegFile(*reg_classes.at(MatRegClass), _numPhysicalMatRegs),
       ccRegFile(*reg_classes.at(CCRegClass), _numPhysicalCCRegs),
       numPhysicalIntRegs(_numPhysicalIntRegs),
       numPhysicalFloatRegs(_numPhysicalFloatRegs),
       numPhysicalVecRegs(_numPhysicalVecRegs),
-      numPhysicalVecElemRegs(_numPhysicalVecRegs * (
-                  reg_classes.at(VecElemClass)->numRegs() /
-                  reg_classes.at(VecRegClass)->numRegs())),
+      numPhysicalVecElemRegs(_numPhysicalVecRegs *
+                             (reg_classes.at(VecElemClass)->numRegs() /
+                              reg_classes.at(VecRegClass)->numRegs())),
       numPhysicalVecPredRegs(_numPhysicalVecPredRegs),
+      numPhysicalMatRegs(_numPhysicalMatRegs),
       numPhysicalCCRegs(_numPhysicalCCRegs),
-      totalNumRegs(_numPhysicalIntRegs
-                   + _numPhysicalFloatRegs
-                   + _numPhysicalVecRegs
-                   + numPhysicalVecElemRegs
-                   + _numPhysicalVecPredRegs
-                   + _numPhysicalCCRegs)
+      totalNumRegs(_numPhysicalIntRegs + _numPhysicalFloatRegs +
+                   _numPhysicalVecRegs + numPhysicalVecElemRegs +
+                   _numPhysicalVecPredRegs + _numPhysicalMatRegs +
+                   _numPhysicalCCRegs +
+                   reg_classes.at(MiscRegClass)->numRegs())
 {
     RegIndex phys_reg;
     RegIndex flat_reg_idx = 0;
@@ -115,6 +118,13 @@ PhysRegFile::PhysRegFile(unsigned _numPhysicalIntRegs,
                 flat_reg_idx++);
     }
 
+    // The next batch of the registers are the matrix physical
+    // registers; put them onto the matrix free list.
+    for (phys_reg = 0; phys_reg < numPhysicalMatRegs; phys_reg++) {
+        matRegIds.emplace_back(*reg_classes.at(MatRegClass), phys_reg,
+                flat_reg_idx++);
+    }
+
     // The rest of the registers are the condition-code physical
     // registers; put them onto the condition-code free list.
     for (phys_reg = 0; phys_reg < numPhysicalCCRegs; phys_reg++) {
@@ -125,7 +135,8 @@ PhysRegFile::PhysRegFile(unsigned _numPhysicalIntRegs,
     // Misc regs have a fixed mapping but still need PhysRegIds.
     for (phys_reg = 0; phys_reg < reg_classes.at(MiscRegClass)->numRegs();
             phys_reg++) {
-        miscRegIds.emplace_back(*reg_classes.at(MiscRegClass), phys_reg, 0);
+        miscRegIds.emplace_back(*reg_classes.at(MiscRegClass), phys_reg,
+                                flat_reg_idx++);
     }
 }
 
@@ -167,54 +178,19 @@ PhysRegFile::initFreeList(UnifiedFreeList *freeList)
     }
     freeList->addRegs(vecPredRegIds.begin(), vecPredRegIds.end());
 
+    /* The next batch of the registers are the matrix physical
+     * registers; put them onto the matrix free list. */
+    for (reg_idx = 0; reg_idx < numPhysicalMatRegs; reg_idx++) {
+        assert(matRegIds[reg_idx].index() == reg_idx);
+    }
+    freeList->addRegs(matRegIds.begin(), matRegIds.end());
+
     // The rest of the registers are the condition-code physical
     // registers; put them onto the condition-code free list.
     for (reg_idx = 0; reg_idx < numPhysicalCCRegs; reg_idx++) {
         assert(ccRegIds[reg_idx].index() == reg_idx);
     }
     freeList->addRegs(ccRegIds.begin(), ccRegIds.end());
-}
-
-PhysRegFile::IdRange
-PhysRegFile::getRegIds(RegClassType cls)
-{
-    switch (cls)
-    {
-      case IntRegClass:
-        return std::make_pair(intRegIds.begin(), intRegIds.end());
-      case FloatRegClass:
-        return std::make_pair(floatRegIds.begin(), floatRegIds.end());
-      case VecRegClass:
-        return std::make_pair(vecRegIds.begin(), vecRegIds.end());
-      case VecElemClass:
-        return std::make_pair(vecElemIds.begin(), vecElemIds.end());
-      case VecPredRegClass:
-        return std::make_pair(vecPredRegIds.begin(), vecPredRegIds.end());
-      case CCRegClass:
-        return std::make_pair(ccRegIds.begin(), ccRegIds.end());
-      case MiscRegClass:
-        return std::make_pair(miscRegIds.begin(), miscRegIds.end());
-      case InvalidRegClass:
-        panic("Tried to get register IDs for the invalid class.");
-    }
-    /* There is no way to make an empty iterator */
-    return std::make_pair(PhysIds::iterator(),
-                          PhysIds::iterator());
-}
-
-PhysRegIdPtr
-PhysRegFile::getTrueId(PhysRegIdPtr reg)
-{
-    switch (reg->classValue()) {
-    case VecRegClass:
-        return &vecRegIds[reg->index()];
-    case VecElemClass:
-        return &vecElemIds[reg->index()];
-    default:
-        panic_if(!reg->is(VecElemClass),
-            "Trying to get the register of a %s register", reg->className());
-    }
-    return nullptr;
 }
 
 } // namespace o3

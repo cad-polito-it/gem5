@@ -24,16 +24,23 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.objects import AddrRange, IOXBar, Port
+from typing import List
 
+from m5.objects import (
+    IOXBar,
+    PciBus,
+)
+from m5.params import (
+    AddrRange,
+    Port,
+)
+
+from ...utils.override import overrides
+from ..cachehierarchies.abstract_cache_hierarchy import AbstractCacheHierarchy
+from ..memory.abstract_memory_system import AbstractMemorySystem
+from ..processors.abstract_processor import AbstractProcessor
 from .abstract_system_board import AbstractSystemBoard
 from .se_binary_workload import SEBinaryWorkload
-from ..processors.abstract_processor import AbstractProcessor
-from ..memory.abstract_memory_system import AbstractMemorySystem
-from ..cachehierarchies.abstract_cache_hierarchy import AbstractCacheHierarchy
-from ...utils.override import overrides
-
-from typing import List
 
 
 class SimpleBoard(AbstractSystemBoard, SEBinaryWorkload):
@@ -44,7 +51,7 @@ class SimpleBoard(AbstractSystemBoard, SEBinaryWorkload):
     **Limitations**
     * Only supports SE mode
 
-    You can run a binary executable via the `set_se_binary_workload` function.
+    You can run a binary executable via the ``set_se_binary_workload`` function.
     """
 
     def __init__(
@@ -77,6 +84,17 @@ class SimpleBoard(AbstractSystemBoard, SEBinaryWorkload):
         )
 
     @overrides(AbstractSystemBoard)
+    def has_pci_bus(self) -> bool:
+        return False
+
+    @overrides(AbstractSystemBoard)
+    def get_pci_bus(self) -> PciBus:
+        raise NotImplementedError(
+            "SimpleBoard does not have an PCI Bus. "
+            "Use `has_pci_bus()` to check this."
+        )
+
+    @overrides(AbstractSystemBoard)
     def has_dma_ports(self) -> bool:
         return False
 
@@ -94,7 +112,7 @@ class SimpleBoard(AbstractSystemBoard, SEBinaryWorkload):
     @overrides(AbstractSystemBoard)
     def get_mem_side_coherent_io_port(self) -> Port:
         raise NotImplementedError(
-            "SimpleBoard does not have any I/O ports. Use has_coherent_io to "
+            "SimpleBoard does not have any I/O ports. Use `has_coherent_io` to "
             "check this."
         )
 

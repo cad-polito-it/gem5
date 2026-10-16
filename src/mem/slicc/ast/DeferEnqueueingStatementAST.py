@@ -41,7 +41,7 @@ class DeferEnqueueingStatementAST(StatementAST):
         self.statements = statements
 
     def __repr__(self):
-        return "[DeferEnqueueingStatementAst: %s %s %s]" % (
+        return "[DeferEnqueueingStatementAst: {} {} {}]".format(
             self.queue_name,
             self.type_ast.ident,
             self.statements,
@@ -68,7 +68,8 @@ class DeferEnqueueingStatementAST(StatementAST):
         # Declare message
         code(
             "std::shared_ptr<${{msg_type.c_ident}}> out_msg = "
-            "std::make_shared<${{msg_type.c_ident}}>(clockEdge());"
+            "std::make_shared<${{msg_type.c_ident}}>(clockEdge(),"
+            "    m_ruby_system->getBlockSizeBytes(), m_ruby_system);"
         )
 
         # The other statements

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2013, 2025 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -131,16 +131,40 @@ class FUPool : public SimObject
     /** Functional units. */
     std::vector<FuncUnit *> funcUnits;
 
-    typedef std::vector<FuncUnit *>::iterator fuListIterator;
-
   public:
     typedef FUPoolParams Params;
     /** Constructs a FU pool. */
     FUPool(const Params &p);
     ~FUPool();
 
+    /**
+     * Named constants to differentiate cases where an
+     * instruction asked the FUPool for a free FU
+     * but did not get one
+     */
+
+    /**
+     * Instruction asked for a FU but does not actually
+     * need any (e.g., NOP)
+     */
+    static constexpr auto NoNeedFU = -3;
+
+    /**
+     * Instruction asked for a FU but this FUPool does
+     * not have a FU for this instruction op type
+     */
     static constexpr auto NoCapableFU = -2;
+
+    /**
+     * Instruction asked for a FU but all FU for
+     * this op type have already been allocated to
+     * other instructions this cycle
+     */
     static constexpr auto NoFreeFU = -1;
+
+    /** Returns true if the FU has the required capability */
+    bool isCapable(OpClass capability);
+
     /**
      * Gets a FU providing the requested capability. Will mark the
      * unit as busy, but leaves the freeing of the unit up to the IEW

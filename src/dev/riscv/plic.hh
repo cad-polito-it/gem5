@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2021 Huawei International
+ * Copyright (c) 2023 Google LLC
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -47,6 +48,7 @@
 #include "mem/packet.hh"
 #include "mem/packet_access.hh"
 #include "params/Plic.hh"
+#include "params/PlicBase.hh"
 #include "sim/system.hh"
 
 namespace gem5
@@ -55,11 +57,9 @@ namespace gem5
 using namespace RiscvISA;
 /**
  * NOTE:
- * This implementation of CLINT is based on
- * the SiFive U54MC datasheet:
- * https://sifive.cdn.prismic.io/sifive/fab000f6-
- * 0e07-48d0-9602-e437d5367806_sifive_U54MC_rtl_
- * full_20G1.03.00_manual.pdf
+ * This implementation of PLIC is based on
+ * he riscv-plic-spec repository:
+ * https://github.com/riscv/riscv-plic-spec/releases/tag/1.0.0
  */
 
 /**
@@ -94,7 +94,21 @@ struct PlicOutput
   std::vector<uint32_t> maxPriority;
 };
 
-class Plic : public BasicPioDevice
+class PlicBase : public BasicPioDevice
+{
+  public:
+    typedef PlicBaseParams Params;
+    PlicBase(const Params &params) :
+      BasicPioDevice(params, params.pio_size)
+    {}
+
+    // Interrupt interface to send signal to PLIC
+    virtual void post(int src_id) = 0;
+    // Interrupt interface to clear signal to PLIC
+    virtual void clear(int src_id) = 0;
+};
+
+class Plic : public PlicBase
 {
   // Params
   protected:
@@ -108,13 +122,14 @@ class Plic : public BasicPioDevice
      */
     int nSrc32;
     /**
-     * Number of interrupt contexts
-     * = nThread * 2
-     * e.g. context 0 => thread 0 M mode
-     *      context 1 => thread 0 S mode
-     * This is based on SiFive U54MC datasheet
+     * PLIC hart/pmode address configs, stored in the format {hartID, pmode}
      */
-    int nContext;
+    std::vector<std::pair<uint32_t, ExceptionCode>> contextConfigs;
+
+    /**
+     * Cycle latency from received interrupt signal to output
+     */
+    uint64_t outputLatency;
 
   public:
     typedef PlicParams Params;
@@ -125,8 +140,8 @@ class Plic : public BasicPioDevice
     /**
      * Interrupt interface
      */
-    void post(int src_id);
-    void clear(int src_id);
+    void post(int src_id) override;
+    void clear(int src_id) override;
 
     /**
      * SimObject functions
@@ -244,6 +259,12 @@ class Plic : public BasicPioDevice
     // per-context last-claimed id
     std::vector<uint32_t> lastID;
     PlicOutput output;
+
+    /**
+     * The function for handling context config from params
+     */
+    void initContextFromNContexts(int n_contexts);
+    void initContextFromHartConfig(const std::string& hart_config);
 
     /**
      * Trigger:

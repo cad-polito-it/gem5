@@ -1,3 +1,15 @@
+# Copyright (c) 2025 Arm Limited
+# All rights reserved.
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
 # Copyright (c) 2021 The Regents of the University of California
 # All rights reserved.
 #
@@ -24,15 +36,28 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-"""Simple memory controllers
-"""
+"""Simple memory controllers"""
+
+from typing import (
+    List,
+    Sequence,
+    Tuple,
+)
+
+from m5.objects import (
+    AbstractMemory,
+    MemCtrl,
+    SimpleMemory,
+)
+from m5.params import (
+    AddrRange,
+    Port,
+)
+from m5.util.convert import toMemorySize
 
 from ...utils.override import overrides
-from m5.util.convert import toMemorySize
-from typing import List, Sequence, Tuple
 from ..boards.abstract_board import AbstractBoard
 from .abstract_memory_system import AbstractMemorySystem
-from m5.objects import AddrRange, MemCtrl, Port, SimpleMemory
 
 
 class SingleChannelSimpleMemory(AbstractMemorySystem):
@@ -74,6 +99,14 @@ class SingleChannelSimpleMemory(AbstractMemorySystem):
     @overrides(AbstractMemorySystem)
     def get_size(self) -> int:
         return self._size
+
+    @overrides(AbstractMemorySystem)
+    def get_uninterleaved_range(self) -> List[AddrRange]:
+        return [self.module.range]
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_interfaces(self) -> List[AbstractMemory]:
+        return [self.module]
 
     @overrides(AbstractMemorySystem)
     def set_memory_range(self, ranges: List[AddrRange]) -> None:

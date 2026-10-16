@@ -2,6 +2,8 @@
  * Copyright (c) 2016 RISC-V Foundation
  * Copyright (c) 2016 The University of Virginia
  * Copyright (c) 2020 Barkhausen Institut
+ * Copyright (c) 2022 Google LLC
+ * Copyright (c) 2024 University of Rostock
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,13 +36,18 @@
 #include <set>
 #include <sstream>
 
+#include "arch/riscv/faults.hh"
+#include "arch/riscv/insts/static_inst.hh"
 #include "arch/riscv/interrupts.hh"
 #include "arch/riscv/mmu.hh"
 #include "arch/riscv/pagetable.hh"
+#include "arch/riscv/pcstate.hh"
 #include "arch/riscv/pmp.hh"
 #include "arch/riscv/regs/float.hh"
 #include "arch/riscv/regs/int.hh"
 #include "arch/riscv/regs/misc.hh"
+#include "arch/riscv/regs/vector.hh"
+#include "arch/riscv/system.hh"
 #include "base/bitfield.hh"
 #include "base/compiler.hh"
 #include "base/logging.hh"
@@ -48,7 +55,10 @@
 #include "cpu/base.hh"
 #include "debug/Checkpoint.hh"
 #include "debug/LLSC.hh"
+#include "debug/MatRegs.hh"
 #include "debug/RiscvMisc.hh"
+#include "debug/VecRegs.hh"
+#include "dev/riscv/clint.hh"
 #include "mem/packet.hh"
 #include "mem/request.hh"
 #include "params/RiscvISA.hh"
@@ -60,7 +70,8 @@ namespace gem5
 namespace RiscvISA
 {
 
-[[maybe_unused]] const std::array<const char *, NUM_MISCREGS> MiscRegNames = {{
+[[maybe_unused]]
+const std::array<const char *, NUM_MISCREGS> MiscRegNames = {{
     [MISCREG_PRV]           = "PRV",
     [MISCREG_ISA]           = "ISA",
     [MISCREG_VENDORID]      = "VENDORID",
@@ -148,9 +159,9 @@ namespace RiscvISA
     [MISCREG_MCAUSE]        = "MCAUSE",
     [MISCREG_MTVAL]         = "MTVAL",
     [MISCREG_PMPCFG0]       = "PMPCFG0",
-    // pmpcfg1 rv32 only
+    [MISCREG_PMPCFG1]       = "PMPCFG1",   // pmpcfg1 is rv32 only
     [MISCREG_PMPCFG2]       = "PMPCFG2",
-    // pmpcfg3 rv32 only
+    [MISCREG_PMPCFG3]       = "PMPCFG3",   // pmpcfg3 is rv32 only
     [MISCREG_PMPADDR00]     = "PMPADDR00",
     [MISCREG_PMPADDR01]     = "PMPADDR01",
     [MISCREG_PMPADDR02]     = "PMPADDR02",
@@ -168,8 +179,8 @@ namespace RiscvISA
     [MISCREG_PMPADDR14]     = "PMPADDR14",
     [MISCREG_PMPADDR15]     = "PMPADDR15",
 
-    [MISCREG_SEDELEG]       = "SEDELEG",
-    [MISCREG_SIDELEG]       = "SIDELEG",
+    [MISCREG_RESERVED01]    = "",
+    [MISCREG_RESERVED02]    = "",
     [MISCREG_STVEC]         = "STVEC",
     [MISCREG_SCOUNTEREN]    = "SCOUNTEREN",
     [MISCREG_SSCRATCH]      = "SSCRATCH",
@@ -177,44 +188,140 @@ namespace RiscvISA
     [MISCREG_SCAUSE]        = "SCAUSE",
     [MISCREG_STVAL]         = "STVAL",
     [MISCREG_SATP]          = "SATP",
+    [MISCREG_SENVCFG]       = "SENVCFG",
 
-    [MISCREG_UTVEC]         = "UTVEC",
-    [MISCREG_USCRATCH]      = "USCRATCH",
-    [MISCREG_UEPC]          = "UEPC",
-    [MISCREG_UCAUSE]        = "UCAUSE",
-    [MISCREG_UTVAL]         = "UTVAL",
+    [MISCREG_RESERVED03]    = "",
+    [MISCREG_RESERVED04]    = "",
+    [MISCREG_RESERVED05]    = "",
+    [MISCREG_RESERVED06]    = "",
+    [MISCREG_RESERVED07]    = "",
     [MISCREG_FFLAGS]        = "FFLAGS",
     [MISCREG_FRM]           = "FRM",
+
+    [MISCREG_VSTART]        = "VSTART",
+    [MISCREG_VXSAT]         = "VXSAT",
+    [MISCREG_VXRM]          = "VXRM",
+    [MISCREG_VCSR]          = "VCSR",
+    [MISCREG_VL]            = "VL",
+    [MISCREG_VTYPE]         = "VTYPE",
+    [MISCREG_VLENB]         = "VLENB",
+
+    // H-extension (RV64) registers
+
+    [MISCREG_HVIP]          = "HVIP",
+
+    [MISCREG_MTINST]        = "MTINST",
+    [MISCREG_MTVAL2]        = "MTVAL2",
+
+    [MISCREG_HSTATUS]       = "HSTATUS",
+    [MISCREG_HEDELEG]       = "HEDELEG",
+    [MISCREG_HIDELEG]       = "HIDELEG",
+    [MISCREG_HCOUNTEREN]    = "HCOUNTEREN",
+    [MISCREG_HGEIE]         = "HGEIE",
+    [MISCREG_HTVAL]         = "HTVAL",
+    [MISCREG_HTINST]        = "HTINST",
+    [MISCREG_HGEIP]         = "HGEIP",
+
+    [MISCREG_HENVCFG]       = "HENVCFG",
+    [MISCREG_HGATP]         = "HGATP",
+    [MISCREG_HCONTEXT]      = "HCONTEXT",
+    [MISCREG_HTIMEDELTA]    = "HTIMEDELTA",
+
+    [MISCREG_VSSTATUS]      = "VSSTATUS",
+    [MISCREG_VSTVEC]        = "VSTVEC",
+    [MISCREG_VSSCRATCH]     = "VSSCRATCH",
+    [MISCREG_VSEPC]         = "VSEPC",
+    [MISCREG_VSCAUSE]       = "VSCAUSE",
+    [MISCREG_VSTVAL]        = "VSTVAL",
+    [MISCREG_VSATP]         = "VSATP",
+    [MISCREG_VIRT]          = "VIRT",
+
+    // H-extension (RV64) registers end here
 
     [MISCREG_NMIVEC]        = "NMIVEC",
     [MISCREG_NMIE]          = "NMIE",
     [MISCREG_NMIP]          = "NMIP",
+    [MISCREG_MNSCRATCH]     = "MNSCRATCH",
+    [MISCREG_MNEPC]         = "MNEPC",
+    [MISCREG_MNCAUSE]       = "MNCAUSE",
+    [MISCREG_MNSTATUS]      = "MNSTATUS",
+
+    // following are rv32 only registers
+    [MISCREG_MSTATUSH]      = "MSTATUSH",
+
+    [MISCREG_CYCLEH]         = "CYCLEH",
+    [MISCREG_TIMEH]          = "TIMEH",
+    [MISCREG_INSTRETH]       = "INSTRETH",
+    [MISCREG_HPMCOUNTER03H]  = "HPMCOUNTER03H",
+    [MISCREG_HPMCOUNTER04H]  = "HPMCOUNTER04H",
+    [MISCREG_HPMCOUNTER05H]  = "HPMCOUNTER05H",
+    [MISCREG_HPMCOUNTER06H]  = "HPMCOUNTER06H",
+    [MISCREG_HPMCOUNTER07H]  = "HPMCOUNTER07H",
+    [MISCREG_HPMCOUNTER08H]  = "HPMCOUNTER08H",
+    [MISCREG_HPMCOUNTER09H]  = "HPMCOUNTER09H",
+    [MISCREG_HPMCOUNTER10H]  = "HPMCOUNTER10H",
+    [MISCREG_HPMCOUNTER11H]  = "HPMCOUNTER11H",
+    [MISCREG_HPMCOUNTER12H]  = "HPMCOUNTER12H",
+    [MISCREG_HPMCOUNTER13H]  = "HPMCOUNTER13H",
+    [MISCREG_HPMCOUNTER14H]  = "HPMCOUNTER14H",
+    [MISCREG_HPMCOUNTER15H]  = "HPMCOUNTER15H",
+    [MISCREG_HPMCOUNTER16H]  = "HPMCOUNTER16H",
+    [MISCREG_HPMCOUNTER17H]  = "HPMCOUNTER17H",
+    [MISCREG_HPMCOUNTER18H]  = "HPMCOUNTER18H",
+    [MISCREG_HPMCOUNTER19H]  = "HPMCOUNTER19H",
+    [MISCREG_HPMCOUNTER20H]  = "HPMCOUNTER20H",
+    [MISCREG_HPMCOUNTER21H]  = "HPMCOUNTER21H",
+    [MISCREG_HPMCOUNTER22H]  = "HPMCOUNTER22H",
+    [MISCREG_HPMCOUNTER23H]  = "HPMCOUNTER23H",
+    [MISCREG_HPMCOUNTER24H]  = "HPMCOUNTER24H",
+    [MISCREG_HPMCOUNTER25H]  = "HPMCOUNTER25H",
+    [MISCREG_HPMCOUNTER26H]  = "HPMCOUNTER26H",
+    [MISCREG_HPMCOUNTER27H]  = "HPMCOUNTER27H",
+    [MISCREG_HPMCOUNTER28H]  = "HPMCOUNTER28H",
+    [MISCREG_HPMCOUNTER29H]  = "HPMCOUNTER29H",
+    [MISCREG_HPMCOUNTER30H]  = "HPMCOUNTER30H",
+    [MISCREG_HPMCOUNTER31H]  = "HPMCOUNTER31H",
+
+    [MISCREG_JVT] = "JVT",
+
+    [MISCREG_FFLAGS_EXE]    = "FFLAGS_EXE",
 }};
 
 namespace
 {
 
 /* Not applicable to RISCV */
-RegClass vecRegClass(VecRegClass, VecRegClassName, 1, debug::IntRegs);
-RegClass vecElemClass(VecElemClass, VecElemClassName, 2, debug::IntRegs);
-RegClass vecPredRegClass(VecPredRegClass, VecPredRegClassName, 1,
+RegClass vecElemClass(VecElemClass, VecElemClassName, 0, debug::IntRegs);
+RegClass vecPredRegClass(VecPredRegClass, VecPredRegClassName, 0,
         debug::IntRegs);
+RegClass matRegClass(MatRegClass, MatRegClassName, 0, debug::MatRegs);
 RegClass ccRegClass(CCRegClass, CCRegClassName, 0, debug::IntRegs);
 
 } // anonymous namespace
 
-ISA::ISA(const Params &p) :
-    BaseISA(p), checkAlignment(p.check_alignment)
+ISA::ISA(const Params &p) : BaseISA(p, "riscv"),
+    _rvType(p.riscv_type), enableRvv(p.enable_rvv), vlen(p.vlen), elen(p.elen),
+    _privilegeModeSet(p.privilege_mode_set),
+    _wfiResumeOnPending(p.wfi_resume_on_pending), _enableZcd(p.enable_Zcd),
+    _enableSmrnmi(p.enable_Smrnmi)
 {
     _regClasses.push_back(&intRegClass);
     _regClasses.push_back(&floatRegClass);
     _regClasses.push_back(&vecRegClass);
     _regClasses.push_back(&vecElemClass);
     _regClasses.push_back(&vecPredRegClass);
+    _regClasses.push_back(&matRegClass);
     _regClasses.push_back(&ccRegClass);
     _regClasses.push_back(&miscRegClass);
 
-    miscRegFile.resize(NUM_MISCREGS);
+    if (enableRvv) {
+        fatal_if(p.vlen < p.elen, "VLEN should be greater or equal",
+                 "than ELEN. Ch. 2RISC-V vector spec.");
+
+        inform("RVV enabled, VLEN = %d bits, ELEN = %d bits", p.vlen, p.elen);
+    }
+
+    miscRegFile.resize(NUM_PHYS_MISCREGS);
     clear();
 }
 
@@ -239,7 +346,18 @@ ISA::copyRegsFrom(ThreadContext *src)
 
     for (auto &id: floatRegClass)
         tc->setFwdReg(id, src->getFwdReg(id));
-        
+
+    // Third loop through the vector registers.
+    RiscvISA::VecRegContainer vc;
+    for (auto &id: vecRegClass) {
+        src->getReg(id, &vc);
+        tc->setReg(id, &vc);
+    }
+
+    // Copying Misc Regs
+    for (int i = 0; i < NUM_PHYS_MISCREGS; i++)
+        tc->setMiscRegNoEffect(i, src->readMiscRegNoEffect(i));
+
     // Lastly copy PC/NPC
     tc->pcState(src->pcState());
 }
@@ -249,49 +367,138 @@ void ISA::clear()
     std::fill(miscRegFile.begin(), miscRegFile.end(), 0);
 
     miscRegFile[MISCREG_PRV] = PRV_M;
-    miscRegFile[MISCREG_ISA] = (2ULL << MXL_OFFSET) | 0x14112D;
     miscRegFile[MISCREG_VENDORID] = 0;
     miscRegFile[MISCREG_ARCHID] = 0;
     miscRegFile[MISCREG_IMPID] = 0;
-    miscRegFile[MISCREG_STATUS] = (2ULL << UXL_OFFSET) | (2ULL << SXL_OFFSET) |
-                                  (1ULL << FS_OFFSET);
+
+    MISA misa = 0;
+    STATUS status = 0;
+
+    // default config arch isa string is rv64(32)imafdc
+    misa.rvi = misa.rvm = misa.rva = misa.rvf = misa.rvd = misa.rvc = 1;
+
+    switch (getPrivilegeModeSet()) {
+        case enums::M:
+          break;
+        case enums::MU:
+          misa.rvu = 1;
+          break;
+        case enums::MSU:
+          misa.rvs = misa.rvu = 1;
+          break;
+        case enums::MHSU:
+          misa.rvh = misa.rvs = misa.rvu = 1;
+          inform("RVH enabled.");
+          break;
+        default:
+          panic("Privilege mode set config should not reach here");
+    }
+
+    // mark FS is initial
+    status.fs = FPUStatus::INITIAL;
+
+    // _rvType dependent init.
+    switch (_rvType) {
+        case RV32:
+          misa.rv32_mxl = 1;
+          break;
+        case RV64:
+          misa.rv64_mxl = 2;
+          status.uxl = status.sxl = 2;
+          if (misa.rvh) {
+              HSTATUS hstatus = 0;
+              hstatus.vsxl = 2;
+              miscRegFile[MISCREG_HSTATUS] = hstatus;
+
+              STATUS vsstatus = 0;
+              vsstatus.uxl = 2;
+              vsstatus.fs = FPUStatus::INITIAL;
+
+              if (getEnableRvv())
+                vsstatus.vs = VPUStatus::INITIAL;
+
+              miscRegFile[MISCREG_VSSTATUS] = vsstatus;
+          }
+          break;
+        default:
+          panic("%s: Unknown _rvType: %d", name(), (int)_rvType);
+    }
+    if (getEnableRvv()) {
+        status.vs = VPUStatus::INITIAL;
+        misa.rvv = 1;
+    }
+
+    miscRegFile[MISCREG_ISA] = misa;
+    miscRegFile[MISCREG_STATUS] = status;
     miscRegFile[MISCREG_MCOUNTEREN] = 0x7;
     miscRegFile[MISCREG_SCOUNTEREN] = 0x7;
     // don't set it to zero; software may try to determine the supported
     // triggers, starting at zero. simply set a different value here.
     miscRegFile[MISCREG_TSELECT] = 1;
-    // NMI is always enabled.
-    miscRegFile[MISCREG_NMIE] = 1;
+    miscRegFile[MISCREG_NMIE] = enableSmrnmi() ? 0 : 1;
 }
 
-bool
-ISA::hpmCounterEnabled(int misc_reg) const
+Fault
+ISA::hpmCounterCheck(int misc_reg, ExtMachInst machInst) const
 {
-    int hpmcounter = misc_reg - MISCREG_CYCLE;
+    int hpmcounter = 0;
+    if (misc_reg >= MISCREG_CYCLEH) {
+        hpmcounter = misc_reg - MISCREG_CYCLEH;
+    } else {
+        hpmcounter = misc_reg - MISCREG_CYCLE;
+    }
+
     if (hpmcounter < 0 || hpmcounter > 31)
         panic("Illegal HPM counter %d\n", hpmcounter);
-    int counteren;
-    switch (readMiscRegNoEffect(MISCREG_PRV)) {
-      case PRV_M:
-        return true;
-      case PRV_S:
-        counteren = MISCREG_MCOUNTEREN;
-        break;
-      case PRV_U:
-        counteren = MISCREG_SCOUNTEREN;
-        break;
-      default:
-        panic("Unknown privilege level %d\n", miscRegFile[MISCREG_PRV]);
-        return false;
+
+    PrivilegeMode prv = (PrivilegeMode)readMiscRegNoEffect(MISCREG_PRV);
+    MISA misa = readMiscRegNoEffect(MISCREG_ISA);
+    RiscvSystem *sys = dynamic_cast<RiscvSystem *>(tc->getSystemPtr());
+    bool is_time_csr = misc_reg == MISCREG_TIME || misc_reg == MISCREG_TIMEH;
+
+    // Check if the clint is exists in system
+    if (is_time_csr && (sys == nullptr || sys->getClint() == nullptr)) {
+        return std::make_shared<IllegalInstFault>("Can't find CLINT in system",
+                                                  machInst);
     }
-    return (miscRegFile[counteren] & (1ULL << (hpmcounter))) > 0;
+
+    RegVal mcounteren = miscRegFile[MISCREG_MCOUNTEREN];
+    RegVal hcounteren = misa.rvh ? miscRegFile[MISCREG_HCOUNTEREN] : 0;
+    RegVal scounteren = misa.rvs ? miscRegFile[MISCREG_SCOUNTEREN] : 0;
+
+    // Paragraph 3.1.11 RISCV Privileged Spec 20211203
+    // firstly, respect mcounteren disallowing the counter
+    if (prv < PRV_M && (bits(mcounteren, hpmcounter) == 0)) {
+        return std::make_shared<IllegalInstFault>(
+            csprintf("Counter %s is disabled from mcounteren bit %d\n",
+            MiscRegNames[misc_reg], hpmcounter), machInst);
+    }
+
+    // then, if h-extension is on and virtualization
+    // is enabled, respect hcounteren for VS and VU
+    if (misa.rvh && virtualizationEnabled() && prv < PRV_HS &&
+        bits(hcounteren, hpmcounter) == 0)
+    {
+        return std::make_shared<VirtualInstFault>(
+            csprintf("Counter %s is disabled from hcounteren bit %d\n",
+            MiscRegNames[misc_reg], hpmcounter), machInst);
+    }
+
+    // finally, respect scounteren for PRV_U (either with V = 1 or 0)
+    if (prv == PRV_U && bits(scounteren, hpmcounter) == 0) {
+        return std::make_shared<IllegalInstFault>(
+            csprintf("Counter %s is disabled from scounteren bit %d\n",
+            MiscRegNames[misc_reg], hpmcounter), machInst);
+    }
+
+    return NoFault;
 }
 
 RegVal
 ISA::readMiscRegNoEffect(RegIndex idx) const
 {
     // Illegal CSR
-    panic_if(idx > NUM_MISCREGS, "Illegal CSR index %#x\n", idx);
+    panic_if(idx > NUM_PHYS_MISCREGS, "Illegal CSR index %#x\n", idx);
     DPRINTF(RiscvMisc, "Reading MiscReg %s (%d): %#x.\n",
             MiscRegNames[idx], idx, miscRegFile[idx]);
     return miscRegFile[idx];
@@ -304,37 +511,34 @@ ISA::readMiscReg(RegIndex idx)
       case MISCREG_HARTID:
         return tc->contextId();
       case MISCREG_CYCLE:
-        if (hpmCounterEnabled(MISCREG_CYCLE)) {
-            DPRINTF(RiscvMisc, "Cycle counter at: %llu.\n",
-                    tc->getCpuPtr()->curCycle());
-            return tc->getCpuPtr()->curCycle();
-        } else {
-            warn("Cycle counter disabled.\n");
-            return 0;
-        }
-      case MISCREG_TIME:
-        if (hpmCounterEnabled(MISCREG_TIME)) {
-            DPRINTF(RiscvMisc, "Wall-clock counter at: %llu.\n",
-                    std::time(nullptr));
-            return readMiscRegNoEffect(MISCREG_TIME);
-        } else {
-            warn("Wall clock disabled.\n");
-            return 0;
-        }
+            return static_cast<RegVal>(tc->getCpuPtr()->curCycle());
+      case MISCREG_CYCLEH:
+            return bits<RegVal>(tc->getCpuPtr()->curCycle(), 63, 32);
+      case MISCREG_TIME: {
+          RiscvSystem *sys = dynamic_cast<RiscvSystem *>(tc->getSystemPtr());
+          panic_if(!sys, "read MISCREG_TIME not in RiscvSystem");
+          return sys->tryReadMtime();
+      }
+      case MISCREG_TIMEH: {
+          RiscvSystem *sys = dynamic_cast<RiscvSystem *>(tc->getSystemPtr());
+          panic_if(!sys, "read MISCREG_TIME not in RiscvSystem");
+          return bits(sys->tryReadMtime(), 63, 32);
+      }
       case MISCREG_INSTRET:
-        if (hpmCounterEnabled(MISCREG_INSTRET)) {
-            DPRINTF(RiscvMisc, "Instruction counter at: %llu.\n",
-                    tc->getCpuPtr()->totalInsts());
-            return tc->getCpuPtr()->totalInsts();
-        } else {
-            warn("Instruction counter disabled.\n");
-            return 0;
-        }
+            return static_cast<RegVal>(tc->getCpuPtr()->totalInsts());
+      case MISCREG_INSTRETH:
+            return bits<RegVal>(tc->getCpuPtr()->totalInsts(), 63, 32);
       case MISCREG_IP:
         {
             auto ic = dynamic_cast<RiscvISA::Interrupts *>(
                     tc->getCpuPtr()->getInterruptController(tc->threadId()));
             return ic->readIP();
+        }
+      case MISCREG_HVIP:
+        {
+            auto ic = dynamic_cast<RiscvISA::Interrupts *>(
+                    tc->getCpuPtr()->getInterruptController(tc->threadId()));
+            return ic->readHVIP();
         }
       case MISCREG_IE:
         {
@@ -342,18 +546,40 @@ ISA::readMiscReg(RegIndex idx)
                     tc->getCpuPtr()->getInterruptController(tc->threadId()));
             return ic->readIE();
         }
+      case MISCREG_MIDELEG:
+        {
+            MISA misa = readMiscRegNoEffect(MISCREG_ISA);
+            auto mideleg_val = readMiscRegNoEffect(MISCREG_MIDELEG);
+
+            // Note: old versions of bbl don't like HS_INTERRUPTS on mideleg
+            // In those cases, the bootloader panics.
+            // You can replace with the line below, however H-extension
+            // is incomplete this way.
+            // we only check misa to avoid unused var error
+            // return misa.rvh ? mideleg_val : mideleg_val;
+            return misa.rvh ? mideleg_val | HS_INTERRUPTS : mideleg_val;
+
+        }
       case MISCREG_SEPC:
       case MISCREG_MEPC:
+      case MISCREG_MNEPC:
         {
-            auto misa = readMiscRegNoEffect(MISCREG_ISA);
+            MISA misa = readMiscRegNoEffect(MISCREG_ISA);
             auto val = readMiscRegNoEffect(idx);
             // if compressed instructions are disabled, epc[1] is set to 0
-            if ((misa & ISA_EXT_C_MASK) == 0)
+            if (misa.rvc == 0)
                 return mbits(val, 63, 2);
             // epc[0] is always 0
             else
                 return mbits(val, 63, 1);
         }
+      case MISCREG_HSTATUS:
+        {
+            auto val = readMiscRegNoEffect(idx);
+            // hardwire vsxl
+            return val |= (2ULL << VSXL_OFFSET);
+        }
+      case MISCREG_VSSTATUS:
       case MISCREG_STATUS:
         {
             // Updating the SD bit.
@@ -371,25 +597,99 @@ ISA::readMiscReg(RegIndex idx)
             STATUS status = readMiscRegNoEffect(idx);
             uint64_t sd_bit = \
                 (status.xs == 3) || (status.fs == 3) || (status.vs == 3);
-            // We assume RV64 here, updating the SD bit at index 63.
-            status.sd = sd_bit;
-            setMiscRegNoEffect(idx, status);
+            // For RV32, the SD bit is at index 31
+            // For RV64, the SD bit is at index 63.
+            switch (_rvType) {
+                case RV32:
+                    status.rv32_sd = sd_bit;
+                    break;
+                case RV64:
+                    status.rv64_sd = sd_bit;
+                    break;
+                default:
+                    panic("%s: Unknown _rvType: %d", name(), (int)_rvType);
+            }
+            // Check status.mpp
+            MISA misa = readMiscRegNoEffect(MISCREG_ISA);
+            switch(status.mpp) {
+                case PRV_U:
+                    status.mpp = (misa.rvu) ? PRV_U : PRV_M;
+                    break;
+                case PRV_S:
+                    if (misa.rvs)
+                        status.mpp = PRV_S;
+                    else
+                        status.mpp = (misa.rvu) ? PRV_U : PRV_M;
+                    break;
+                case PRV_M:
+                    break;
+                default:
+                    status.mpp = (misa.rvu) ? PRV_U : PRV_M;
+            }
 
+            setMiscRegNoEffect(idx, status);
             return readMiscRegNoEffect(idx);
         }
+      case MISCREG_VLENB:
+        {
+            return getVecLenInBytes();
+        }
+      case MISCREG_VTYPE:
+        {
+            auto rpc = tc->pcState().as<PCState>();
+            return rpc.vtype();
+        }
+      case MISCREG_VL:
+        {
+            auto rpc = tc->pcState().as<PCState>();
+            return (RegVal)rpc.vl();
+        }
+      case MISCREG_VCSR:
+        {
+            return readMiscRegNoEffect(MISCREG_VXSAT) |
+                  (readMiscRegNoEffect(MISCREG_VXRM) << 1);
+        }
+        break;
+
+      case MISCREG_MNSTATUS:
+        {
+            NSTATUS nstatus = readMiscRegNoEffect(idx);
+            nstatus.nmie = readMiscRegNoEffect(MISCREG_NMIE);
+            // Check nstatus.mnpp
+            MISA misa = readMiscRegNoEffect(MISCREG_ISA);
+            switch(nstatus.mnpp) {
+                case PRV_U:
+                    nstatus.mnpp = (misa.rvu) ? PRV_U : PRV_M;
+                    break;
+                case PRV_S:
+                    if (misa.rvs)
+                        nstatus.mnpp = PRV_S;
+                    else
+                        nstatus.mnpp = (misa.rvu) ? PRV_U : PRV_M;
+                    break;
+                case PRV_M:
+                    break;
+                default:
+                    nstatus.mnpp = (misa.rvu) ? PRV_U : PRV_M;
+            }
+            return nstatus;
+        }
+
+      case MISCREG_FFLAGS_EXE:
+        {
+            return readMiscRegNoEffect(MISCREG_FFLAGS) & FFLAGS_MASK;
+        }
+
       default:
         // Try reading HPM counters
         // As a placeholder, all HPM counters are just cycle counters
         if (idx >= MISCREG_HPMCOUNTER03 &&
                 idx <= MISCREG_HPMCOUNTER31) {
-            if (hpmCounterEnabled(idx)) {
-                DPRINTF(RiscvMisc, "HPM counter %d: %llu.\n",
-                        idx - MISCREG_CYCLE, tc->getCpuPtr()->curCycle());
-                return tc->getCpuPtr()->curCycle();
-            } else {
-                warn("HPM counter %d disabled.\n", idx - MISCREG_CYCLE);
-                return 0;
-            }
+            return tc->getCpuPtr()->curCycle();
+
+        } else if (idx >= MISCREG_HPMCOUNTER03H &&
+                idx <= MISCREG_HPMCOUNTER31H) {
+            return bits<RegVal>(tc->getCpuPtr()->curCycle(), 63, 32);
         }
         return readMiscRegNoEffect(idx);
     }
@@ -399,7 +699,7 @@ void
 ISA::setMiscRegNoEffect(RegIndex idx, RegVal val)
 {
     // Illegal CSR
-    panic_if(idx > NUM_MISCREGS, "Illegal CSR index %#x\n", idx);
+    panic_if(idx > NUM_PHYS_MISCREGS, "Illegal CSR index %#x\n", idx);
     DPRINTF(RiscvMisc, "Setting MiscReg %s (%d) to %#x.\n",
             MiscRegNames[idx], idx, val);
     miscRegFile[idx] = val;
@@ -410,7 +710,7 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
 {
     if (idx >= MISCREG_CYCLE && idx <= MISCREG_HPMCOUNTER31) {
         // Ignore writes to HPM counters for now
-        warn("Ignoring write to %s.\n", CSRData.at(idx).name);
+        warn("Ignoring write to miscreg %s.\n", MiscRegNames[idx]);
     } else {
         switch (idx) {
 
@@ -421,18 +721,34 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
           // for 8 PMP entries.
 
           case MISCREG_PMPCFG0:
+          case MISCREG_PMPCFG1:
           case MISCREG_PMPCFG2:
+          case MISCREG_PMPCFG3:
             {
                 // PMP registers should only be modified in M mode
                 assert(readMiscRegNoEffect(MISCREG_PRV) == PRV_M);
+
+                int regSize = 0;
+                switch (_rvType) {
+                    case RV32:
+                        regSize = 4;
+                    break;
+                    case RV64:
+                        regSize = 8;
+                    break;
+                    default:
+                        panic("%s: Unknown _rvType: %d", name(), (int)_rvType);
+                }
 
                 // Specs do not seem to mention what should be
                 // configured first, cfg or address regs!
                 // qemu seems to update the tables when
                 // pmp addr regs are written (with the assumption
                 // that cfg regs are already written)
+                RegVal res = 0;
+                RegVal old_val = readMiscRegNoEffect(idx);
 
-                for (int i=0; i < sizeof(val); i++) {
+                for (int i=0; i < regSize; i++) {
 
                     uint8_t cfg_val = (val >> (8*i)) & 0xff;
                     auto mmu = dynamic_cast<RiscvISA::MMU *>
@@ -440,14 +756,15 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
 
                     // Form pmp_index using the index i and
                     // PMPCFG register number
-                    // Note: MISCREG_PMPCFG2 - MISCREG_PMPCFG0 = 1
-                    // 8*(idx-MISCREG_PMPCFG0) will be useful
-                    // if a system contains more than 16 PMP entries
-                    uint32_t pmp_index = i+(8*(idx-MISCREG_PMPCFG0));
-                    mmu->getPMP()->pmpUpdateCfg(pmp_index,cfg_val);
+                    uint32_t pmp_index = i+(4*(idx-MISCREG_PMPCFG0));
+                    bool result = mmu->getPMP()->pmpUpdateCfg(pmp_index,cfg_val);
+                    if (result) {
+                        res |= ((RegVal)cfg_val << (8*i));
+                    } else {
+                        res |= (old_val & (0xFF << (8*i)));
+                    }
                 }
-
-                setMiscRegNoEffect(idx, val);
+                setMiscRegNoEffect(idx, res);
             }
             break;
           case MISCREG_PMPADDR00 ... MISCREG_PMPADDR15:
@@ -458,21 +775,29 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
                 auto mmu = dynamic_cast<RiscvISA::MMU *>
                               (tc->getMMUPtr());
                 uint32_t pmp_index = idx-MISCREG_PMPADDR00;
-                mmu->getPMP()->pmpUpdateAddr(pmp_index, val);
-
-                setMiscRegNoEffect(idx, val);
+                if (mmu->getPMP()->pmpUpdateAddr(pmp_index, val)) {
+                    setMiscRegNoEffect(idx, val);
+                }
+          } break;
+          case MISCREG_IP:
+            {
+                RegVal mask = MI_MASK[getPrivilegeModeSet()];
+                auto ic = dynamic_cast<RiscvISA::Interrupts *>(
+                    tc->getCpuPtr()->getInterruptController(tc->threadId()));
+                val = (val & mask) | (ic->readIP() & ~mask);
+                ic->setIP(val);
             }
             break;
-
-          case MISCREG_IP:
+          case MISCREG_HVIP:
             {
                 auto ic = dynamic_cast<RiscvISA::Interrupts *>(
                     tc->getCpuPtr()->getInterruptController(tc->threadId()));
-                ic->setIP(val);
+                ic->setHVIP(val);
             }
             break;
           case MISCREG_IE:
             {
+                val = val & MI_MASK[getPrivilegeModeSet()];
                 auto ic = dynamic_cast<RiscvISA::Interrupts *>(
                     tc->getCpuPtr()->getInterruptController(tc->threadId()));
                 ic->setIE(val);
@@ -487,7 +812,75 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
                 if (new_val.mode != AddrXlateMode::BARE &&
                     new_val.mode != AddrXlateMode::SV39)
                     new_val.mode = cur_val.mode;
+
+                // TLB flush can be elided here
+                // --- From the RISCV Privileged Spec 20250508, p.129 ---
+                // "Not imposing upon implementations to flush
+                // address-translation caches upon satp writes reduces
+                // the cost of context switches provided a sufficiently
+                // large ASID space."
+
                 setMiscRegNoEffect(idx, new_val);
+            }
+            break;
+
+          case MISCREG_VSATP:
+            {
+                // we only support bare and Sv39 mode; setting a different mode
+                // shall have no effect (see 4.1.12 in priv ISA manual)
+                SATP cur_val = readMiscRegNoEffect(idx);
+                SATP new_val = val;
+                if (new_val.mode != AddrXlateMode::BARE &&
+                    new_val.mode != AddrXlateMode::SV39)
+                    new_val.mode = cur_val.mode;
+
+                setMiscRegNoEffect(idx, new_val);
+            }
+            break;
+
+          case MISCREG_SENVCFG:
+            {
+                // panic on write to bitfields that aren't implemented in gem5
+                SENVCFG panic_mask = 0;
+                panic_mask.pmm = 3;
+
+                SENVCFG wpri_mask = 0;
+                wpri_mask.wpri_1 = ~wpri_mask.wpri_1;
+                wpri_mask.wpri_2 = ~wpri_mask.wpri_2;
+                wpri_mask.wpri_3 = ~wpri_mask.wpri_3;
+
+                if ((panic_mask & val) != 0) {
+                    panic("Tried to write to an unimplemented bitfield in the "
+                    "senvcfg CSR!\nThe attempted write was:\n %" PRIu64 "\n",
+                    val);
+                }
+
+                setMiscRegNoEffect(idx, val & ~wpri_mask);
+            }
+            break;
+          case MISCREG_HGATP:
+            {
+                // TLB flush can be elided here
+                // --- From the RISCV Privileged Spec 20250508, p.171 ---
+                // Note that writing hgatp does not imply any ordering
+                // constraints between page-table updates and
+                // subsequent G-stage address translations.
+                // If the new virtual machine’s guest physical page tables have
+                // been modified, or if a VMID is reused,
+                // it may be necessary to execute an HFENCE.GVMA instruction
+                // (see Section 21.3.2) before or after writing hgatp.
+
+                SATP cur_val = readMiscRegNoEffect(idx);
+                SATP new_val = val;
+
+                if (new_val.mode != AddrXlateMode::BARE &&
+                    new_val.mode != AddrXlateMode::SV39)
+                {
+                    new_val.mode = cur_val.mode;
+                }
+
+                setMiscRegNoEffect(idx, new_val);
+
             }
             break;
           case MISCREG_TSELECT:
@@ -499,24 +892,94 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
             break;
           case MISCREG_ISA:
             {
-                auto cur_val = readMiscRegNoEffect(idx);
+                MISA cur_misa = (MISA)readMiscRegNoEffect(MISCREG_ISA);
+                MISA new_misa = (MISA)val;
                 // only allow to disable compressed instructions
                 // if the following instruction is 4-byte aligned
-                if ((val & ISA_EXT_C_MASK) == 0 &&
+                if (new_misa.rvc == 0 &&
                         bits(tc->pcState().as<RiscvISA::PCState>().npc(),
                             2, 0) != 0) {
-                    val |= cur_val & ISA_EXT_C_MASK;
+                    new_misa.rvc = new_misa.rvc | cur_misa.rvc;
                 }
-                setMiscRegNoEffect(idx, val);
+                if (!getEnableRvv()) {
+                    new_misa.rvv = 0;
+                }
+                new_misa.rvs = cur_misa.rvs;
+                new_misa.rvu = cur_misa.rvu;
+                setMiscRegNoEffect(idx, new_misa);
             }
             break;
           case MISCREG_STATUS:
             {
-                // SXL and UXL are hard-wired to 64 bit
-                auto cur = readMiscRegNoEffect(idx);
-                val &= ~(STATUS_SXL_MASK | STATUS_UXL_MASK);
-                val |= cur & (STATUS_SXL_MASK | STATUS_UXL_MASK);
+                if (_rvType != RV32) {
+                    // SXL and UXL are hard-wired to 64 bit
+                    auto cur = readMiscRegNoEffect(idx);
+                    val &= ~(STATUS_SXL_MASK | STATUS_UXL_MASK);
+                    val |= cur & (STATUS_SXL_MASK | STATUS_UXL_MASK);
+                }
+                if (!getEnableRvv()) {
+                    // Always OFF is rvv is disabled.
+                    val &= ~STATUS_VS_MASK;
+                }
                 setMiscRegNoEffect(idx, val);
+            }
+            break;
+          case MISCREG_VSSTATUS:
+            {
+
+                auto cur = readMiscRegNoEffect(idx);
+                auto wmask_map = CSRWriteMasks[RV64][getPrivilegeModeSet()];
+                auto sstatus_wmask = wmask_map.find(CSR_VSSTATUS)->second;
+                val = (cur & ~sstatus_wmask) | val;
+                setMiscRegNoEffect(idx, val);
+            }
+            break;
+          case MISCREG_VXSAT:
+            {
+                setMiscRegNoEffect(idx, val & 0x1);
+            }
+            break;
+          case MISCREG_VXRM:
+            {
+                setMiscRegNoEffect(idx, val & 0x3);
+            }
+            break;
+          case MISCREG_VCSR:
+            {
+                setMiscRegNoEffect(MISCREG_VXSAT, val & 0x1);
+                setMiscRegNoEffect(MISCREG_VXRM, (val & 0x6) >> 1);
+            }
+            break;
+          case MISCREG_PRV:
+            {
+                setMiscRegNoEffect(idx, val);
+            }
+            break;
+          case MISCREG_VIRT:
+            {
+                tc->getMMUPtr()->flushAll();
+                setMiscRegNoEffect(idx, val);
+            }
+            break;
+          case MISCREG_MNSTATUS:
+            {
+                NSTATUS nstatus = val;
+                setMiscRegNoEffect(MISCREG_NMIE,
+                    (RegVal)nstatus.nmie | readMiscRegNoEffect(MISCREG_NMIE));
+                setMiscRegNoEffect(idx, val);
+            }
+            break;
+          case MISCREG_JVT:
+            {
+                setMiscRegNoEffect(idx, rvSext(val));
+            }
+            break;
+
+          case MISCREG_FFLAGS_EXE:
+            {
+                RegVal new_val = readMiscRegNoEffect(MISCREG_FFLAGS);
+                new_val |= (val & FFLAGS_MASK);
+                setMiscRegNoEffect(MISCREG_FFLAGS, new_val);
             }
             break;
           default:
@@ -528,6 +991,8 @@ ISA::setMiscReg(RegIndex idx, RegVal val)
 void
 ISA::serialize(CheckpointOut &cp) const
 {
+    BaseISA::serialize(cp);
+
     DPRINTF(Checkpoint, "Serializing Riscv Misc Registers\n");
     SERIALIZE_CONTAINER(miscRegFile);
 }
@@ -538,11 +1003,6 @@ ISA::unserialize(CheckpointIn &cp)
     DPRINTF(Checkpoint, "Unserializing Riscv Misc Registers\n");
     UNSERIALIZE_CONTAINER(miscRegFile);
 }
-
-const int WARN_FAILURE = 10000;
-
-const Addr INVALID_RESERVATION_ADDR = (Addr) -1;
-std::unordered_map<int, Addr> load_reservation_addrs;
 
 void
 ISA::handleLockedSnoop(PacketPtr pkt, Addr cacheBlockMask)
@@ -563,9 +1023,9 @@ ISA::handleLockedRead(const RequestPtr &req)
 {
     Addr& load_reservation_addr = load_reservation_addrs[tc->contextId()];
 
-    load_reservation_addr = req->getPaddr() & ~0xF;
+    load_reservation_addr = req->getPaddr();
     DPRINTF(LLSC, "[cid:%d]: Reserved address %x.\n",
-            req->contextId(), req->getPaddr() & ~0xF);
+            req->contextId(), req->getPaddr());
 }
 
 bool
@@ -584,12 +1044,13 @@ ISA::handleLockedWrite(const RequestPtr &req, Addr cacheBlockMask)
             lr_addr_empty ? "yes" : "no");
     if (!lr_addr_empty) {
         DPRINTF(LLSC, "[cid:%d]: addr = %x.\n", req->contextId(),
-                req->getPaddr() & ~0xF);
+                req->getPaddr() & cacheBlockMask);
         DPRINTF(LLSC, "[cid:%d]: last locked addr = %x.\n", req->contextId(),
-                load_reservation_addr);
+                load_reservation_addr & cacheBlockMask);
     }
-    if (lr_addr_empty
-            || load_reservation_addr != ((req->getPaddr() & ~0xF))) {
+    if (lr_addr_empty ||
+            (load_reservation_addr & cacheBlockMask)
+            != ((req->getPaddr() & cacheBlockMask))) {
         req->setExtraData(0);
         int stCondFailures = tc->readStCondFailures();
         tc->setStCondFailures(++stCondFailures);
@@ -597,12 +1058,21 @@ ISA::handleLockedWrite(const RequestPtr &req, Addr cacheBlockMask)
             warn("%i: context %d: %d consecutive SC failures.\n",
                     curTick(), tc->contextId(), stCondFailures);
         }
+
+        // Must clear any reservations
+        load_reservation_addr = INVALID_RESERVATION_ADDR;
+
         return false;
     }
     if (req->isUncacheable()) {
         req->setExtraData(2);
     }
 
+    // Must clear any reservations
+    load_reservation_addr = INVALID_RESERVATION_ADDR;
+
+    DPRINTF(LLSC, "[cid:%d]: SC success! Current locked addr = %x.\n",
+            req->contextId(), load_reservation_addr & cacheBlockMask);
     return true;
 }
 
@@ -610,7 +1080,355 @@ void
 ISA::globalClearExclusive()
 {
     tc->getCpuPtr()->wakeup(tc->threadId());
+    Addr& load_reservation_addr = load_reservation_addrs[tc->contextId()];
+    load_reservation_addr = INVALID_RESERVATION_ADDR;
 }
+
+void
+ISA::resetThread()
+{
+    Reset().invoke(tc);
+}
+
+bool
+ISA::virtualizationEnabled() const
+{
+    // Virtualized when V-bit is 1
+    return readMiscRegNoEffect(MISCREG_VIRT) == 1;
+}
+
+void
+ISA::swapToVirtCSR(
+    uint64_t& csr, RegIndex& midx, std::string& csrName)
+{
+    switch (csr) {
+        case CSR_SSTATUS:  csr = CSR_VSSTATUS;  break;
+        case CSR_STVEC:    csr = CSR_VSTVEC;    break;
+        case CSR_SSCRATCH: csr = CSR_VSSCRATCH; break;
+        case CSR_SEPC:     csr = CSR_VSEPC;     break;
+        case CSR_SCAUSE:   csr = CSR_VSCAUSE;   break;
+        case CSR_STVAL:    csr = CSR_VSTVAL;    break;
+        case CSR_SATP:     csr = CSR_VSATP;     break;
+        case CSR_SIP:      csr = CSR_VSIP;      break;
+        case CSR_SIE:      csr = CSR_VSIE;      break;
+        default:           return;              break;
+    }
+
+    // Lookup new midx and csrName
+    auto csr_data_it = getCSRDataMap().find(csr);
+    if (csr_data_it == getCSRDataMap().end()) {
+        panic("Bad remapping of virtualized CSR");
+    }
+    midx = csr_data_it->second.physIndex;
+    csrName = csr_data_it->second.name;
+}
+
+Fault
+ISA::tvmChecks(uint64_t csr, PrivilegeMode pm, ExtMachInst machInst)
+{
+    if (csr == CSR_SATP) {
+        STATUS status = readMiscReg(MISCREG_STATUS);
+        if (pm != PRV_M && status.tvm == 1) {
+            return std::make_shared<IllegalInstFault>(
+                    "SATP access with TVM enabled\n",
+                    machInst);
+        }
+    } else if (csr == CSR_VSATP) {
+        if (virtualizationEnabled()) {
+        HSTATUS hstatus = readMiscReg(MISCREG_HSTATUS);
+        if (hstatus.vtvm == 1)
+            return std::make_shared<VirtualInstFault>(
+                "VSATP access with hstatus.vtvm enabled",
+                machInst);
+        }
+    } else if (csr == CSR_HGATP) {
+        STATUS status = readMiscReg(MISCREG_STATUS);
+        if (pm != PRV_M && status.tvm == 1) {
+            return std::make_shared<IllegalInstFault>(
+                    "HGATP access with TVM enabled\n",
+                    machInst);
+        }
+    }
+
+
+    return NoFault;
+}
+
+RegVal
+ISA::backdoorReadCSRAllBits(ExecContext *xc, uint64_t csr)
+{
+    auto csr_it = getCSRDataMap().find(csr);
+
+    // panic if the method was used with bad csr idx
+    panic_if(csr_it == getCSRDataMap().end(),
+        "Illegal CSR passed to backdoorReadCSRAllBits");
+
+    auto midx = csr_it->second.physIndex;
+
+    RegVal readval = xc->readMiscReg(midx);
+
+    // Special handling for FCSR
+    if (csr == CSR_FCSR) {
+        readval = (xc->readMiscReg(MISCREG_FFLAGS) |
+            (xc->readMiscReg(MISCREG_FRM) << FRM_OFFSET));
+    }
+
+    return readval;
+}
+
+RegVal
+ISA::readCSR(ExecContext *xc, uint64_t csr)
+{
+    auto csr_it = getCSRDataMap().find(csr);
+
+    // panic if the method was used with bad csr idx
+    panic_if(csr_it == getCSRDataMap().end(), "Illegal CSR passed to readCSR");
+
+
+    auto mask_it = getCSRMaskMap().find(csr);
+    RegVal maskVal = (mask_it == getCSRMaskMap().end()) ?
+                        mask(64) : mask_it->second;
+
+    RegVal readval = backdoorReadCSRAllBits(xc, csr) & maskVal;
+
+
+    // Some registers need additional masking/shifting
+    // to read the correct value
+    switch (csr) {
+        case CSR_SIP: case CSR_SIE:
+        case CSR_HIP: case CSR_HIE:
+        {
+            RegVal mideleg = xc->readMiscReg(MISCREG_MIDELEG);
+            readval &= mideleg;
+            break;
+        }
+        // VSIP and VSIE bits are stored one bit to the left
+        // However reads expect them in SIP and SIE positions!
+        case CSR_VSIP: case CSR_VSIE:
+        {
+            RegVal hideleg = xc->readMiscReg(MISCREG_HIDELEG);
+            readval &= hideleg;
+            readval >>= 1;
+            break;
+        }
+
+        case CSR_HVIP:
+        {
+            INTERRUPT mip = xc->readMiscReg(MISCREG_IP);
+            readval |= (mip.vssi << 2);
+            break;
+        }
+        default: break;
+    }
+
+    return readval;
+}
+
+void
+ISA::writeCSR(ExecContext *xc, uint64_t csr, RegVal writeData)
+{
+    auto csr_it = getCSRDataMap().find(csr);
+
+    // panic if the method was used with bad csr idx
+    panic_if(csr_it == getCSRDataMap().end(),
+        "Illegal CSR passed to writeCSR");
+
+    // find physical register id (MISCREG == physical)
+    auto midx = csr_it->second.physIndex;
+
+    switch (csr) {
+        case CSR_SIP: case CSR_SIE:
+        case CSR_HIP: case CSR_HIE:
+        {
+            RegVal mideleg = xc->readMiscReg(MISCREG_MIDELEG);
+            writeData &= mideleg;
+            break;
+        }
+
+        // Special case for VSIP & VSIE
+        // We presented the bits in SIP and SIE (one position right)
+        // But we shift them up one again so that they don't overwrite
+        // the actual SIP and SIE but instead take their actual places.
+        // This happens because XIP and XIE are shared registers
+        // but VS-level should be unaware that its SIP and SIE bits are stored
+        // elsewhere.
+        case CSR_VSIP: case CSR_VSIE:
+        {
+            RegVal hideleg = xc->readMiscReg(MISCREG_HIDELEG);
+            writeData <<= 1;
+            writeData &= hideleg;
+            break;
+        }
+        default:
+            break;
+    }
+
+    auto& csr_read_masks = getCSRMaskMap();
+    auto& csr_write_masks = getCSRWriteMaskMap();
+
+    // If no read mask or write mask, assume all bits are writable
+    RegVal write_mask = mask(64);
+
+    // To save space, we only specify write masks that differ
+    // from the respective read masks in misc.hh
+    // If there is no write mask, use the read mask to write
+    // all "visible" aka readable bits. Else use mask(64).
+    auto write_mask_it = csr_write_masks.find(csr);
+    if (write_mask_it != csr_write_masks.end()) {
+        write_mask = write_mask_it->second;
+    } else {
+        auto read_mask_it = csr_read_masks.find(csr);
+        if (read_mask_it != csr_read_masks.end()) {
+            write_mask = read_mask_it->second;
+        }
+    }
+
+    auto writeDataMasked = writeData & write_mask;
+
+    // CSRs are often aliases with different visibility
+    // on the same physical register (MISCREG).
+    // We must keep the values of the non-visible bits
+    // intact for other privileges/contexts where
+    // they are used.
+
+    // Read all the CSR bits
+    auto reg_data_all = backdoorReadCSRAllBits(xc, csr);
+
+    // Only modify those in writeMask
+    auto new_reg_data_all = (reg_data_all & ~write_mask)
+                          | (writeData & write_mask);
+
+
+    switch (csr) {
+        case CSR_FCSR: {
+            xc->setMiscReg(MISCREG_FFLAGS, bits(writeDataMasked, 4, 0));
+            xc->setMiscReg(MISCREG_FRM, bits(writeDataMasked, 7, 5));
+            break;
+        }
+
+        case CSR_HVIP: {
+            // vssi bit is an alias, propagate to mip
+            INTERRUPT mip = xc->readMiscReg(MISCREG_IP);
+            mip.vssi = (new_reg_data_all & VSSI_MASK) >> 2;
+            xc->setMiscReg(MISCREG_IP, mip);
+
+            // turn off vssi for write to HVIP
+            new_reg_data_all &= ~VSSI_MASK;
+
+            // finally write hvip
+            xc->setMiscReg(midx, new_reg_data_all);
+            break;
+        }
+        // case CSR_MIP: case CSR_MIE:
+        // case CSR_HIP: case CSR_HIE:
+        // case CSR_SIP: case CSR_SIE:
+        // case CSR_VSIP: case CSR_VSIE:
+        // case CSR_MSTATUS: case CSR_SSTATUS:
+        //     xc->setMiscReg(midx, new_reg_data_all);
+        //     break;
+        default:
+            xc->setMiscReg(midx, new_reg_data_all);
+            break;
+    }
+}
+
+Addr
+ISA::getFaultHandlerAddr(RegIndex idx, uint64_t cause, bool intr) const
+{
+    auto vec = tc->readMiscRegNoEffect(idx);
+    Addr addr = mbits(vec, 63, 2);
+    if (intr && bits(vec, 1, 0) == 1)
+        addr += 4 * cause;
+    return addr;
+}
+
+// V-bit utilities (H-extension)
+bool virtualizationEnabled(ExecContext *xc) {
+    return xc->readMiscReg(MISCREG_VIRT);
+}
+bool virtualizationEnabled(ThreadContext *tc) {
+    return tc->readMiscReg(MISCREG_VIRT);
+}
+
+void setV(ExecContext *xc) {
+    assert(!virtualizationEnabled(xc));
+    xc->setMiscReg(MISCREG_VIRT, 1);
+}
+void setV(ThreadContext *tc) {
+    assert(!virtualizationEnabled(tc));
+    tc->setMiscReg(MISCREG_VIRT, 1);
+}
+
+void resetV(ExecContext *xc) {
+    assert(virtualizationEnabled(xc));
+    xc->setMiscReg(MISCREG_VIRT, 0);
+}
+void resetV(ThreadContext *tc) {
+    assert(virtualizationEnabled(tc));
+    tc->setMiscReg(MISCREG_VIRT, 0);
+}
+
+// FPU status update function
+Fault
+updateFPUStatus(ExecContext *xc, ExtMachInst machInst, bool set_dirty)
+{
+    MISA misa = xc->readMiscReg(MISCREG_ISA);
+    STATUS status = xc->readMiscReg(MISCREG_STATUS);
+    STATUS vsstatus = misa.rvh && virtualizationEnabled(xc) ?
+        xc->readMiscReg(MISCREG_VSSTATUS) : 0;
+
+    if (status.fs == FPUStatus::OFF ||
+        (misa.rvh && virtualizationEnabled(xc) &&
+         vsstatus.fs == FPUStatus::OFF))
+        return std::make_shared<IllegalInstFault>("FPU is off", machInst);
+
+    if (set_dirty) {
+        status.fs = FPUStatus::DIRTY;
+        xc->setMiscReg(MISCREG_STATUS, status);
+
+        if (misa.rvh && virtualizationEnabled(xc)) {
+            vsstatus.fs = FPUStatus::DIRTY;
+            xc->setMiscReg(MISCREG_VSSTATUS, vsstatus);
+        }
+    }
+
+    return NoFault;
+}
+
+// VPU status update function
+Fault
+updateVPUStatus(
+    ExecContext *xc, ExtMachInst machInst, bool set_dirty, bool check_vill)
+{
+    MISA misa = xc->readMiscReg(MISCREG_ISA);
+    STATUS status = xc->readMiscReg(MISCREG_STATUS);
+    STATUS vsstatus = misa.rvh && virtualizationEnabled(xc) ?
+        xc->readMiscReg(MISCREG_VSSTATUS) : 0;
+
+    if (!misa.rvv || status.vs == VPUStatus::OFF ||
+        (misa.rvh && virtualizationEnabled(xc) &&
+         vsstatus.vs == VPUStatus::OFF)) {
+        return std::make_shared<IllegalInstFault>(
+            "RVV is disabled or VPU is off", machInst);
+    }
+
+    if (check_vill && machInst.vill) {
+        return std::make_shared<IllegalInstFault>("VILL is set", machInst);
+    }
+
+    if (set_dirty) {
+        status.vs = VPUStatus::DIRTY;
+        xc->setMiscReg(MISCREG_STATUS, status);
+
+        if (misa.rvh && virtualizationEnabled(xc)) {
+            vsstatus.vs = VPUStatus::DIRTY;
+            xc->setMiscReg(MISCREG_VSSTATUS, vsstatus);
+        }
+    }
+
+    return NoFault;
+}
+
 
 } // namespace RiscvISA
 } // namespace gem5
@@ -625,6 +1443,7 @@ operator<<(std::ostream &os, gem5::RiscvISA::PrivilegeMode pm)
         return os << "PRV_S";
     case gem5::RiscvISA::PRV_M:
         return os << "PRV_M";
+    default:
+        return os << "PRV_<invalid>";
     }
-    return os << "PRV_<invalid>";
 }

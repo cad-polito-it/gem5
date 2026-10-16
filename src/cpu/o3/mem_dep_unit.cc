@@ -26,8 +26,6 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "cpu/o3/mem_dep_unit.hh"
-
 #include <map>
 #include <memory>
 #include <vector>
@@ -37,6 +35,7 @@
 #include "cpu/o3/dyn_inst.hh"
 #include "cpu/o3/inst_queue.hh"
 #include "cpu/o3/limits.hh"
+#include "cpu/o3/mem_dep_unit.hh"
 #include "debug/MemDepUnit.hh"
 #include "params/BaseO3CPU.hh"
 
@@ -46,7 +45,7 @@ namespace gem5
 namespace o3
 {
 
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
 int MemDepUnit::MemDepEntry::memdep_count = 0;
 int MemDepUnit::MemDepEntry::memdep_insert = 0;
 int MemDepUnit::MemDepEntry::memdep_erase = 0;
@@ -56,8 +55,9 @@ MemDepUnit::MemDepUnit() : iqPtr(NULL), stats(nullptr) {}
 
 MemDepUnit::MemDepUnit(const BaseO3CPUParams &params)
     : _name(params.name + ".memdepunit"),
-      depPred(params.store_set_clear_period, params.SSITSize,
-              params.LFSTSize),
+      depPred(_name + ".storesets", params.store_set_clear_period,
+              params.SSITSize, params.SSITAssoc, params.SSITReplPolicy,
+              params.SSITIndexingPolicy, params.LFSTSize),
       iqPtr(NULL),
       stats(nullptr)
 {
@@ -83,7 +83,7 @@ MemDepUnit::~MemDepUnit()
         }
     }
 
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     assert(MemDepEntry::memdep_count == 0);
 #endif
 }
@@ -91,13 +91,15 @@ MemDepUnit::~MemDepUnit()
 void
 MemDepUnit::init(const BaseO3CPUParams &params, ThreadID tid, CPU *cpu)
 {
+    _name = csprintf("%s.memDep%d", params.name, tid);
+
     DPRINTF(MemDepUnit, "Creating MemDepUnit %i object.\n",tid);
 
-    _name = csprintf("%s.memDep%d", params.name, tid);
     id = tid;
 
-    depPred.init(params.store_set_clear_period, params.SSITSize,
-            params.LFSTSize);
+    depPred.init(params.store_set_clear_period,
+                 params.SSITSize, params.SSITAssoc, params.SSITReplPolicy,
+                 params.SSITIndexingPolicy, params.LFSTSize);
 
     std::string stats_group_name = csprintf("MemDepUnit__%i", tid);
     cpu->addStatGroup(stats_group_name.c_str(), &stats);
@@ -196,7 +198,7 @@ MemDepUnit::insert(const DynInstPtr &inst)
     // Add the MemDepEntry to the hash.
     memDepHash.insert(
         std::pair<InstSeqNum, MemDepEntryPtr>(inst->seqNum, inst_entry));
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     MemDepEntry::memdep_insert++;
 #endif
 
@@ -329,7 +331,7 @@ MemDepUnit::insertBarrier(const DynInstPtr &barr_inst)
     // Add the MemDepEntry to the hash.
     memDepHash.insert(
         std::pair<InstSeqNum, MemDepEntryPtr>(barr_inst->seqNum, inst_entry));
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     MemDepEntry::memdep_insert++;
 #endif
 
@@ -419,7 +421,7 @@ MemDepUnit::completed(const DynInstPtr &inst)
     (*hash_it).second = NULL;
 
     memDepHash.erase(hash_it);
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     MemDepEntry::memdep_erase++;
 #endif
 }
@@ -494,7 +496,7 @@ MemDepUnit::wakeDependents(const DynInstPtr &inst)
 MemDepUnit::MemDepEntry::MemDepEntry(const DynInstPtr &new_inst) :
     inst(new_inst)
 {
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     ++memdep_count;
 
     DPRINTF(MemDepUnit,
@@ -508,7 +510,7 @@ MemDepUnit::MemDepEntry::~MemDepEntry()
     for (int i = 0; i < dependInsts.size(); ++i) {
         dependInsts[i] = NULL;
     }
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     --memdep_count;
 
     DPRINTF(MemDepUnit,
@@ -556,7 +558,7 @@ MemDepUnit::squash(const InstSeqNum &squashed_num, ThreadID tid)
         (*hash_it).second = NULL;
 
         memDepHash.erase(hash_it);
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
         MemDepEntry::memdep_erase++;
 #endif
 
@@ -635,7 +637,7 @@ MemDepUnit::dumpLists()
 
     cprintf("Memory dependence hash size: %i\n", memDepHash.size());
 
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     cprintf("Memory dependence entries: %i\n", MemDepEntry::memdep_count);
 #endif
 }

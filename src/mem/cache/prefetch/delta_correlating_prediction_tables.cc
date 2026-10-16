@@ -29,29 +29,30 @@
 #include "mem/cache/prefetch/delta_correlating_prediction_tables.hh"
 
 #include "debug/HWPrefetch.hh"
-#include "mem/cache/prefetch/associative_set_impl.hh"
 #include "params/DCPTPrefetcher.hh"
 #include "params/DeltaCorrelatingPredictionTables.hh"
 
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Prefetcher, prefetch);
 namespace prefetch
 {
 
 DeltaCorrelatingPredictionTables::DeltaCorrelatingPredictionTables(
    const DeltaCorrelatingPredictionTablesParams &p) : SimObject(p),
    deltaBits(p.delta_bits), deltaMaskBits(p.delta_mask_bits),
-   table(p.table_assoc, p.table_entries, p.table_indexing_policy,
-         p.table_replacement_policy, DCPTEntry(p.deltas_per_entry))
+   table((name() + "DCPT").c_str(), p.table_entries,
+         p.table_assoc, p.table_replacement_policy,
+         p.table_indexing_policy,
+         DCPTEntry(p.deltas_per_entry,
+                   genTagExtractor(p.table_indexing_policy)))
 {
 }
 
 void
 DeltaCorrelatingPredictionTables::DCPTEntry::invalidate()
 {
-    TaggedEntry::invalidate();
+    CacheEntry::invalidate();
 
     deltas.flush();
     while (!deltas.full()) {
@@ -126,7 +127,8 @@ DeltaCorrelatingPredictionTables::DCPTEntry::getCandidates(
 void
 DeltaCorrelatingPredictionTables::calculatePrefetch(
     const Base::PrefetchInfo &pfi,
-    std::vector<Queued::AddrPriority> &addresses)
+    std::vector<Queued::AddrPriority> &addresses,
+    const CacheAccessor &cache)
 {
     if (!pfi.hasPC()) {
         DPRINTF(HWPrefetch, "Ignoring request with no PC.\n");
@@ -134,9 +136,8 @@ DeltaCorrelatingPredictionTables::calculatePrefetch(
     }
     Addr address = pfi.getAddr();
     Addr pc = pfi.getPC();
-    // Look up table entry, is_secure is unused in findEntry because we
-    // index using the pc
-    DCPTEntry *entry = table.findEntry(pc, false /* unused */);
+    // Look up table entry
+    DCPTEntry *entry = table.findEntry(pc);
     if (entry != nullptr) {
         entry->addAddress(address, deltaBits);
         //Delta correlating
@@ -144,7 +145,7 @@ DeltaCorrelatingPredictionTables::calculatePrefetch(
     } else {
         entry = table.findVictim(pc);
 
-        table.insertEntry(pc, false /* unused */, entry);
+        table.insertEntry(pc, entry);
 
         entry->lastAddress = address;
     }
@@ -157,9 +158,10 @@ DCPT::DCPT(const DCPTPrefetcherParams &p)
 
 void
 DCPT::calculatePrefetch(const PrefetchInfo &pfi,
-    std::vector<AddrPriority> &addresses)
+    std::vector<AddrPriority> &addresses,
+    const CacheAccessor &cache)
 {
-    dcpt.calculatePrefetch(pfi, addresses);
+    dcpt.calculatePrefetch(pfi, addresses, cache);
 }
 
 } // namespace prefetch

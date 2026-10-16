@@ -38,10 +38,9 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from asyncio import subprocess
 import os
-import sys
 import subprocess
+import sys
 
 import gem5_scons.util
 import SCons.Script
@@ -59,11 +58,11 @@ def install_style_hooks(env):
     try:
         gitdir = env.Dir(
             gem5_scons.util.readCommand(
-                ["git", "rev-parse", "--git-dir"]
+                ["git", "rev-parse", "--git-common-dir"]
             ).strip("\n")
         )
     except Exception as e:
-        print("Warning: Failed to find git repo directory: %s" % e)
+        print(f"Warning: Failed to find git repo directory: {e}")
         return
 
     git_hooks = gitdir.Dir("hooks")

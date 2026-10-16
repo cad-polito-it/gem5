@@ -64,6 +64,7 @@ class SectorSubBlk : public CacheBlk
   public:
     SectorSubBlk() : CacheBlk(), _sectorBlk(nullptr), _sectorOffset(0) {}
     SectorSubBlk(const SectorSubBlk&) = delete;
+    using CacheBlk::operator=;
     SectorSubBlk& operator=(const SectorSubBlk&) = delete;
     SectorSubBlk(SectorSubBlk&&) = delete;
     /**
@@ -112,7 +113,7 @@ class SectorSubBlk : public CacheBlk
      */
     void setValid() override;
 
-    void insert(const Addr tag, const bool is_secure) override;
+    void insert(const KeyType &tag) override;
 
     /**
      * Invalidate the block and inform sector block.

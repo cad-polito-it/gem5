@@ -43,7 +43,7 @@
 These memory "interfaces" contain the timing,energy,etc parameters for each
 memory type and are usually based on datasheets for the memory devices.
 
-You can use these interfaces in the MemCtrl object as the `dram` timing
+You can use these interfaces in the MemCtrl object as the ``dram`` timing
 interface.
 """
 
@@ -69,7 +69,7 @@ class LPDDR3_1600_1x32(DRAMInterface):
     # LPDDR3 is a BL8 device
     burst_length = 8
 
-    # Each device has a page (row buffer) size of 4KB
+    # Each device has a page (row buffer) size of 4KiB
     device_rowbuffer_size = "4KiB"
 
     # 1x32 configuration, so 1 device

@@ -131,7 +131,7 @@ class MemInterface : public AbstractMemory
      * ranks and banks, the burst size, and the row buffer size.
      */
     const uint32_t burstSize;
-    const uint32_t deviceSize;
+    const uint64_t deviceSize;
     const uint32_t deviceRowBufferSize;
     const uint32_t devicesPerRank;
     const uint32_t rowBufferSize;
@@ -188,6 +188,28 @@ class MemInterface : public AbstractMemory
      */
     Tick nextBurstAt = 0;
     Tick nextReqTime = 0;
+
+    /**
+     * Reads/writes performed by the controller for this interface before
+     * bus direction is switched
+     */
+    uint32_t readsThisTime = 0;
+    uint32_t writesThisTime = 0;
+
+    /**
+     * Read/write packets in the read/write queue for this interface
+     * qos/mem_ctrl.hh has similar counters, but they track all packets
+     * in the controller for all memory interfaces connected to the
+     * controller.
+     */
+    uint32_t readQueueSize = 0;
+    uint32_t writeQueueSize = 0;
+
+
+    MemCtrl::BusState busState = MemCtrl::READ;
+
+    /** bus state for next request event triggered */
+    MemCtrl::BusState busStateNext = MemCtrl::READ;
 
     /**
      * pseudo channel number used for HBM modeling

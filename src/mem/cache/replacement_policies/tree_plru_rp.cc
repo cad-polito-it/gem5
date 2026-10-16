@@ -43,7 +43,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(ReplacementPolicy, replacement_policy);
 namespace replacement_policy
 {
 
@@ -105,8 +104,8 @@ TreePLRU::TreePLRUReplData::TreePLRUReplData(
 TreePLRU::TreePLRU(const Params &p)
   : Base(p), numLeaves(p.num_leaves), count(0), treeInstance(nullptr)
 {
-    fatal_if(!isPowerOf2(numLeaves),
-             "Number of leaves must be non-zero and a power of 2");
+    fatal_if(numLeaves < 1,
+        "numLeaves should never be 0");
 }
 
 void
@@ -193,7 +192,7 @@ TreePLRU::getVictim(const ReplacementCandidates& candidates) const
 
     // The tree index is currently at the leaf of the victim displaced by the
     // number of non-leaf nodes
-    return candidates[tree_index - (numLeaves - 1)];
+    return candidates.at(tree_index - (numLeaves - 1));
 }
 
 std::shared_ptr<ReplacementData>
@@ -201,7 +200,10 @@ TreePLRU::instantiateEntry()
 {
     // Generate a tree instance every numLeaves created
     if (count % numLeaves == 0) {
-        treeInstance = new PLRUTree(numLeaves - 1, false);
+        if (treeInstance != nullptr) {
+            treeInstance.reset();
+        }
+        treeInstance = std::make_shared<PLRUTree>(numLeaves - 1, false);
     }
 
     // Create replacement data using current tree instance

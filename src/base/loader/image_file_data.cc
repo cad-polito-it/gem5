@@ -42,7 +42,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Loader, loader);
 namespace loader
 {
 
@@ -65,21 +64,16 @@ doGzipLoad(int fd)
         return -1;
     }
 
-    size_t tmp_len = strlen(P_tmpdir);
-    char *tmpnam = (char*) malloc(tmp_len + 20);
-    strcpy(tmpnam, P_tmpdir);
-    strcpy(tmpnam+tmp_len, "/gem5-gz-obj-XXXXXX"); // 19 chars
+    std::string tmpnam_str = std::string(P_tmpdir) + "/gem5-gz-obj-XXXXXX";
+    char *tmpnam = const_cast<char*>(tmpnam_str.c_str());
     fd = mkstemp(tmpnam); // repurposing fd variable for output
     if (fd < 0) {
-        free(tmpnam);
         gzclose(fdz);
         return fd;
     }
 
     if (unlink(tmpnam) != 0)
         warn("couldn't remove temporary file %s\n", tmpnam);
-
-    free(tmpnam);
 
     auto buf = new uint8_t[blk_sz];
     int r; // size of (r)emaining uncopied data in (buf)fer
@@ -102,7 +96,7 @@ doGzipLoad(int fd)
     return fd; // return fd to decompressed temporary file for mmap()'ing
 }
 
-ImageFileData::ImageFileData(const std::string &fname)
+ImageFileData::ImageFileData(const std::string &fname, bool try_decompress)
 {
     _filename = fname;
 
@@ -113,7 +107,7 @@ ImageFileData::ImageFileData(const std::string &fname)
         "incorrect.\n", fname);
 
     // Decompress GZ files.
-    if (hasGzipMagic(fd)) {
+    if (try_decompress && hasGzipMagic(fd)) {
         fd = doGzipLoad(fd);
         panic_if(fd < 0, "Failed to unzip file %s.\n", fname);
     }

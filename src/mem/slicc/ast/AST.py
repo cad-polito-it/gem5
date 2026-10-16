@@ -25,7 +25,10 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from slicc.util import PairContainer, Location
+from slicc.util import (
+    Location,
+    PairContainer,
+)
 
 
 class AST(PairContainer):
@@ -56,7 +59,7 @@ class AST(PairContainer):
         code = self.slicc.codeFormatter()
         code(
             """
-panic("Runtime Error at ${{self.location}}: %s.\\n", $message);
+panic("Runtime Error at ${{self.location}}: %s for machine %s.\\n", $message, name());
 """
         )
         return code

@@ -35,6 +35,7 @@
 #include <cmath>
 
 #include "arch/amdgpu/vega/gpu_registers.hh"
+#include "arch/amdgpu/vega/insts/gpu_static_inst.hh"
 
 namespace gem5
 {
@@ -303,9 +304,9 @@ namespace VegaISA
      * Currently the values are:
      * 0x0 - 0xFF: full permute of four threads
      * 0x100: reserved
-     * 0x101 - 0x10F: row shift right by 1-15 threads
+     * 0x101 - 0x10F: row shift left by 1-15 threads
      * 0x111 - 0x11F: row shift right by 1-15 threads
-     * 0x121 - 0x12F: row shift right by 1-15 threads
+     * 0x121 - 0x12F: row rotate right by 1-15 threads
      * 0x130: wavefront left shift by 1 thread
      * 0x134: wavefront left rotate by 1 thread
      * 0x138: wavefront right shift by 1 thread
@@ -315,14 +316,16 @@ namespace VegaISA
      * 0x142: broadcast 15th thread of each row to next row
      * 0x143: broadcast thread 31 to rows 2 and 3
      */
-    int dppInstImpl(SqDPPVals dppCtrl, int currLane, int rowNum,
+    inline int
+    dppInstImpl(SqDPPVals dppCtrl, int currLane, int rowNum,
                     int rowOffset, bool & outOfBounds)
     {
         // local variables
         // newLane will be the same as the input lane unless swizzling happens
         int newLane = currLane;
         // for shift/rotate permutations; positive values are LEFT rotates
-        int count = 1;
+        // shift/rotate left means lane n -> lane n-1 (e.g., lane 1 -> lane 0)
+        int count = 0;
         int localRowOffset = rowOffset;
         int localRowNum = rowNum;
 
@@ -335,51 +338,47 @@ namespace VegaISA
             panic("ERROR: instruction using reserved DPP_CTRL value\n");
         } else if ((dppCtrl >= SQ_DPP_ROW_SL1) &&
                    (dppCtrl <= SQ_DPP_ROW_SL15)) { // DPP_ROW_SL{1:15}
-            count -= (dppCtrl - SQ_DPP_ROW_SL1 + 1);
+            count = (dppCtrl - SQ_DPP_ROW_SL1 + 1);
             if ((localRowOffset + count >= 0) &&
                 (localRowOffset + count < ROW_SIZE)) {
                 localRowOffset += count;
-                newLane = (rowNum | localRowOffset);
+                newLane = ((rowNum * ROW_SIZE) | localRowOffset);
             } else {
                 outOfBounds = true;
             }
         } else if ((dppCtrl >= SQ_DPP_ROW_SR1) &&
                    (dppCtrl <= SQ_DPP_ROW_SR15)) { // DPP_ROW_SR{1:15}
-            count -= (dppCtrl - SQ_DPP_ROW_SR1 + 1);
+            count = -(dppCtrl - SQ_DPP_ROW_SR1 + 1);
             if ((localRowOffset + count >= 0) &&
                 (localRowOffset + count < ROW_SIZE)) {
                 localRowOffset += count;
-                newLane = (rowNum | localRowOffset);
+                newLane = ((rowNum * ROW_SIZE) | localRowOffset);
             } else {
                 outOfBounds = true;
             }
         } else if ((dppCtrl >= SQ_DPP_ROW_RR1) &&
                    (dppCtrl <= SQ_DPP_ROW_RR15)) { // DPP_ROW_RR{1:15}
-            count -= (dppCtrl - SQ_DPP_ROW_RR1 + 1);
+            count = -(dppCtrl - SQ_DPP_ROW_RR1 + 1);
             localRowOffset = (localRowOffset + count + ROW_SIZE) % ROW_SIZE;
-            newLane = (rowNum | localRowOffset);
+            newLane = ((rowNum * ROW_SIZE) | localRowOffset);
         } else if (dppCtrl == SQ_DPP_WF_SL1) { // DPP_WF_SL1
-            count = 1;
             if ((currLane >= 0) && (currLane < NumVecElemPerVecReg)) {
-                newLane += count;
+                newLane += 1;
             } else {
                 outOfBounds = true;
             }
         } else if (dppCtrl == SQ_DPP_WF_RL1) { // DPP_WF_RL1
-            count = 1;
-            newLane = (currLane + count + NumVecElemPerVecReg) %
+            newLane = (currLane - 1 + NumVecElemPerVecReg) %
                       NumVecElemPerVecReg;
         } else if (dppCtrl == SQ_DPP_WF_SR1) { // DPP_WF_SR1
-            count = -1;
-            int currVal = (currLane + count);
+            int currVal = (currLane - 1);
             if ((currVal >= 0) && (currVal < NumVecElemPerVecReg)) {
-                newLane += count;
+                newLane -= 1;
             } else {
                 outOfBounds = true;
             }
         } else if (dppCtrl == SQ_DPP_WF_RR1) { // DPP_WF_RR1
-            count = -1;
-            newLane = (currLane + count + NumVecElemPerVecReg) %
+            newLane = (currLane - 1 + NumVecElemPerVecReg) %
                       NumVecElemPerVecReg;
         } else if (dppCtrl == SQ_DPP_ROW_MIRROR) { // DPP_ROW_MIRROR
             localRowOffset = (15 - localRowOffset);
@@ -392,12 +391,22 @@ namespace VegaISA
         } else if (dppCtrl == SQ_DPP_ROW_BCAST15) { // DPP_ROW_BCAST15
             count = 15;
             if (currLane > count) {
-                newLane = (currLane & ~count) - 1;
+                // 0x30 selects which set of 16 lanes to use. We broadcast the
+                // last lane of one set to all lanes of the next set (e.g.,
+                // lane 15 is written to 16-31, 31 to 32-47, 47 to 48-63).
+                newLane = (currLane & 0x30) - 1;
+            } else {
+                outOfBounds = true;
             }
         } else if (dppCtrl == SQ_DPP_ROW_BCAST31) { // DPP_ROW_BCAST31
             count = 31;
             if (currLane > count) {
-                newLane = (currLane & ~count) - 1;
+                // 0x20 selects either the upper 32 or lower 32 lanes and
+                // broadcasts the last lane of one set to all lanes of the
+                // next set (e.g., lane 31 is written to 32-63).
+                newLane = (currLane & 0x20) - 1;
+            } else {
+                outOfBounds = true;
             }
         } else {
             panic("Unimplemented DPP control operation: %d\n", dppCtrl);
@@ -443,6 +452,9 @@ namespace VegaISA
             src0.absModifier();
         }
 
+        // Need a copy of the original data since we update one lane at a time
+        T src0_copy = src0;
+
         // iterate over all register lanes, performing steps 2-4
         for (int lane = 0; lane < NumVecElemPerVecReg; ++lane) {
             threadValid = (0x1LL << lane);
@@ -458,7 +470,6 @@ namespace VegaISA
             if (((rowMask & (0x1 << rowNum)) == 0)   /* row mask */   ||
                 ((bankMask & (0x1 << bankNum)) == 0) /* bank mask */) {
                 laneDisabled = true;
-                continue;
             }
 
             /**
@@ -495,7 +506,7 @@ namespace VegaISA
                 } else {
                     threadValid = 0;
                 }
-            } else if (!gpuDynInst->exec_mask[lane]) {
+            } else if (!gpuDynInst->wavefront()->execMask(lane)) {
                 if (boundCtrl == 1) {
                     zeroSrc = true;
                 } else {
@@ -505,13 +516,15 @@ namespace VegaISA
 
             if (threadValid != 0 && !outOfBounds && !zeroSrc) {
                 assert(!laneDisabled);
-                src0[outLane] = src0[lane];
+                src0[lane] = src0_copy[outLane];
             } else if (zeroSrc) {
                 src0[lane] = 0;
             }
 
             // reset for next iteration
             laneDisabled = false;
+            outOfBounds = false;
+            zeroSrc = false;
         }
     }
 
@@ -688,7 +701,7 @@ namespace VegaISA
         if (sel < SDWA_WORD_0) { // we are selecting 1 byte
             // if we sign extended depends on upper-most bit of byte 0
             signExt = (signExt &&
-                       (bits(currDstVal, VegaISA::MSB_PER_WORD, 0) & 0x80));
+                       (bits(currDstVal, VegaISA::MSB_PER_BYTE, 0) & 0x80));
 
             for (int byte = 0; byte < 4; ++byte) {
                 low_bit = byte * VegaISA::BITS_PER_BYTE;
@@ -701,7 +714,7 @@ namespace VegaISA
                     3.  byte > sel && signExt: we're sign extending and
                     this byte is one of the bytes we need to sign extend
                 */
-                origBits_thisByte = bits(origDstVal, high_bit, low_bit);
+                origBits_thisByte = bits(origDstVal, VegaISA::MSB_PER_BYTE, 0);
                 currBits_thisByte = bits(currDstVal, high_bit, low_bit);
                 newBits = ((byte == sel) ? origBits_thisByte :
                            ((preserve) ? currBits_thisByte :
@@ -726,7 +739,7 @@ namespace VegaISA
                     3.  word > (sel & 1) && signExt: we're sign extending and
                     this word is one of the words we need to sign extend
                 */
-                origBits_thisWord = bits(origDstVal, high_bit, low_bit);
+                origBits_thisWord = bits(origDstVal, VegaISA::MSB_PER_WORD, 0);
                 currBits_thisWord = bits(currDstVal, high_bit, low_bit);
                 newBits = ((word == (sel & 0x1)) ? origBits_thisWord :
                            ((preserve) ? currBits_thisWord :
@@ -890,6 +903,70 @@ namespace VegaISA
          */
         sdwaInstDstImpl(dst, origDst, clamp, dst_sel, dst_unusedBits_format);
     }
+
+    /**
+     * Unpack MXFP values from a register based on opsel value and type size
+     */
+    template<typename T>
+    std::pair<T, T> unpackMXOperands(uint32_t src, int opsel)
+    {
+        // Specific to packed 2-component operands.
+        constexpr int pack_count = 2;
+        int pack_size = T::size() * pack_count;
+
+        int upper_bit = opsel * pack_size + pack_size - 1;
+        int lower_bit = opsel * pack_size;
+
+        uint32_t opdata = bits(src, upper_bit, lower_bit);
+
+        uint32_t first  = bits(opdata, T::size() - 1, 0);
+        uint32_t second = bits(opdata, 2 * T::size() - 1, T::size());
+
+        return std::make_pair(T(second), T(first));
+    }
+
+    /**
+     * Pack two MXFP values into one dword
+     */
+    template<typename T>
+    uint32_t packMXOperands32(T& upper_operand, T& lower_operand)
+    {
+        assert(upper_operand.size() <= 16);
+        assert(lower_operand.size() == upper_operand.size());
+
+        uint16_t upper_value =
+            bits(upper_operand.data, 31, 32 - upper_operand.size());
+        uint16_t lower_value =
+            bits(lower_operand.data, 31, 32 - lower_operand.size());
+
+        uint32_t result = upper_value;
+        result <<= upper_operand.size();
+        result |= lower_value;
+
+        return result;
+    }
+
+    /**
+     * Pack two MXFP values into one qword
+     */
+    template<typename T>
+    uint64_t packMXOperands64(T& lower_operand, T& upper_operand)
+    {
+        assert(upper_operand.size() <= 32);
+        assert(lower_operand.size() == upper_operand.size());
+
+        uint32_t upper_value =
+            bits(upper_operand.data, 31, 32 - upper_operand.size());
+        uint32_t lower_value =
+            bits(lower_operand.data, 31, 32 - lower_operand.size());
+
+        uint64_t result = upper_value;
+        result <<= upper_operand.size();
+        result |= lower_value;
+
+        return result;
+    }
+
 } // namespace VegaISA
 } // namespace gem5
 

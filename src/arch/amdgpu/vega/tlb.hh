@@ -105,9 +105,16 @@ class GpuTLB : public ClockedObject
 
   protected:
     typedef std::list<VegaTlbEntry*> EntryList;
-    EntryList::iterator lookupIt(Addr va, bool update_lru=true);
+    EntryList::iterator lookupIt(Addr va, unsigned int ps,
+                                 bool update_lru=true);
     Walker *walker;
     AMDGPUDevice *gpuDevice;
+
+    int getSet(Addr va, unsigned int page_shift);
+
+    //List of possible page size, 4k and 2m for now
+    const std::array<unsigned int, 2>
+    logPageShiftList = {VegaISA::PageShift, 21};
 
     int size;
     int assoc;
@@ -215,7 +222,7 @@ class GpuTLB : public ClockedObject
       public:
         CpuSidePort(const std::string &_name, GpuTLB * gpu_TLB,
                     PortID _index)
-            : ResponsePort(_name, gpu_TLB), tlb(gpu_TLB), index(_index) { }
+            : ResponsePort(_name), tlb(gpu_TLB), index(_index) { }
 
       protected:
         GpuTLB *tlb;
@@ -242,7 +249,7 @@ class GpuTLB : public ClockedObject
       public:
         MemSidePort(const std::string &_name, GpuTLB * gpu_TLB,
                     PortID _index)
-            : RequestPort(_name, gpu_TLB), tlb(gpu_TLB), index(_index) { }
+            : RequestPort(_name), tlb(gpu_TLB), index(_index) { }
 
         std::deque<PacketPtr> retries;
 

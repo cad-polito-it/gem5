@@ -33,10 +33,13 @@
 #include <sstream>
 #include <string>
 
+#include "arch/riscv/faults.hh"
 #include "arch/riscv/insts/static_inst.hh"
 #include "arch/riscv/regs/misc.hh"
+#include "arch/riscv/semihosting.hh"
 #include "arch/riscv/utility.hh"
 #include "cpu/static_inst.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
@@ -85,6 +88,24 @@ SystemOp::generateDisassembly(Addr pc, const loader::SymbolTable *symtab) const
     }
 
     return mnemonic;
+}
+
+Fault
+SystemOp::executeEBreakOrSemihosting(ExecContext *xc) const
+{
+    // If semihosting is enabled, we may need to execute a semihosting
+    // operation instead of raising a breakpoint fault.
+    ThreadContext *tc = xc->tcBase();
+    if (auto *semihosting = dynamic_cast<RiscvSemihosting *>(
+                tc->getSystemPtr()->workload->getSemihosting())) {
+        if (semihosting->isSemihostingEBreak(xc) && semihosting->call(tc)) {
+            return NoFault;
+        }
+    }
+    // No semihosting, raise a standard breakpoint exception.
+    MISA misa = xc->readMiscReg(MISCREG_ISA);
+    bool virtualized = misa.rvh ? virtualizationEnabled(xc) : false;
+    return std::make_shared<BreakpointFault>(xc->pcState(), virtualized);
 }
 
 } // namespace RiscvISA

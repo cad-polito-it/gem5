@@ -66,8 +66,8 @@ class PortTerminator : public SimObject
     class ReqPort : public RequestPort
     {
       public:
-        ReqPort(const std::string &name, PortTerminator *owner):
-            RequestPort(name, owner)
+        ReqPort(const std::string &name):
+            RequestPort(name)
         {}
       protected:
         bool recvTimingResp(PacketPtr pkt) override
@@ -97,9 +97,34 @@ class PortTerminator : public SimObject
     class RespPort : public ResponsePort
     {
       public:
-        RespPort(const std::string &name, PortTerminator *owner):
-            ResponsePort(name, owner)
+        RespPort(const std::string &name):
+            ResponsePort(name)
         {}
+
+        Tick recvAtomic(PacketPtr) override
+        {
+            panic("PortTerminator recvAtomic should never be called");
+        }
+
+        bool recvTimingReq(PacketPtr) override
+        {
+            panic("PortTerminator recvTimingReq should never be called");
+        }
+
+        void recvRespRetry() override
+        {
+            panic("PortTerminator recvRespRetry should never be called");
+        }
+
+        void recvFunctional(PacketPtr) override
+        {
+            panic("PortTerminator recvFunctional should never be called");
+        }
+
+        AddrRangeList getAddrRanges() const override
+        {
+            panic("PortTerminator getAddrRanges should never be called");
+        }
     };
 
     std::vector<ReqPort> reqPorts;

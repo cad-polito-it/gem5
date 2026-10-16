@@ -36,7 +36,6 @@
 from m5.params import *
 from m5.proxy import *
 from m5.SimObject import SimObject
-from m5.objects.IntPin import IntSourcePin
 
 
 class RiscvRTC(SimObject):

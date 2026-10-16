@@ -32,7 +32,10 @@ multiprocessing module (i.e., cpython/Lib/multiprocessing/).
 """
 
 import sys
-from multiprocessing import spawn, util
+from multiprocessing import (
+    spawn,
+    util,
+)
 
 
 def _gem5_args_for_multiprocessing(name):
@@ -65,11 +68,16 @@ def _gem5_args_for_multiprocessing(name):
     # --dot-config, --dot-dvfs-config, --debug-file, --remote-gdb-port, -c
 
     arguments = [
-        f"--outdir={options.outdir}/{name}",
-        f"--stdout-file={options.stdout_file}",
-        f"--stderr-file={options.stderr_file}",
-        f"--stats-file={options.stats_file}",
+        # Keep the original outdir. This will be overridden by multisim
+        f"--outdir={options.outdir}",
+        # Update the stdout and stderr names so we can see them. These will be
+        # overridden by multisim
+        f"--stdout-file={name}_{options.stdout_file}",
+        f"--stderr-file={name}_{options.stderr_file}",
     ]
+    # Keep the stats files names. They will be in the new outdir
+    for filepath in options.stats_file:
+        arguments.append(f"--stats-file={filepath}")
     if options.redirect_stdout:
         arguments.append("--redirect-stdout")
     if options.redirect_stderr:
@@ -86,7 +94,7 @@ def _gem5_args_for_multiprocessing(name):
 
 def get_command_line(name, **kwds):
     """
-    Returns prefix of command line used for spawning a child process
+    Returns prefix of command line used for spawning a child process.
     """
     if getattr(sys, "frozen", False):
         return [sys.executable, "--multiprocessing-fork"] + [

@@ -30,8 +30,10 @@
 #include "mem/ruby/system/CacheRecorder.hh"
 
 #include "debug/RubyCacheTrace.hh"
+#include "mem/packet.hh"
 #include "mem/ruby/system/RubySystem.hh"
 #include "mem/ruby/system/Sequencer.hh"
+#include "sim/sim_exit.hh"
 
 namespace gem5
 {
@@ -47,29 +49,25 @@ TraceRecord::print(std::ostream& out) const
         << m_type << ", Time: " << m_time << "]";
 }
 
-CacheRecorder::CacheRecorder()
-    : m_uncompressed_trace(NULL),
-      m_uncompressed_trace_size(0),
-      m_block_size_bytes(RubySystem::getBlockSizeBytes())
-{
-}
-
 CacheRecorder::CacheRecorder(uint8_t* uncompressed_trace,
                              uint64_t uncompressed_trace_size,
-                             std::vector<Sequencer*>& seq_map,
-                             uint64_t block_size_bytes)
+                             std::vector<RubyPort*>& ruby_port_map,
+                             uint64_t trace_block_size_bytes,
+                             uint64_t system_block_size_bytes)
     : m_uncompressed_trace(uncompressed_trace),
       m_uncompressed_trace_size(uncompressed_trace_size),
-      m_seq_map(seq_map),  m_bytes_read(0), m_records_read(0),
-      m_records_flushed(0), m_block_size_bytes(block_size_bytes)
+      m_ruby_port_map(ruby_port_map), m_bytes_read(0),
+      m_records_read(0), m_records_flushed(0),
+      m_block_size_bytes(trace_block_size_bytes)
+
 {
     if (m_uncompressed_trace != NULL) {
-        if (m_block_size_bytes < RubySystem::getBlockSizeBytes()) {
+        if (m_block_size_bytes < system_block_size_bytes) {
             // Block sizes larger than when the trace was recorded are not
             // supported, as we cannot reliably turn accesses to smaller blocks
             // into larger ones.
             panic("Recorded cache block size (%d) < current block size (%d) !!",
-                    m_block_size_bytes, RubySystem::getBlockSizeBytes());
+                    m_block_size_bytes, system_block_size_bytes);
         }
     }
 }
@@ -80,7 +78,7 @@ CacheRecorder::~CacheRecorder()
         delete [] m_uncompressed_trace;
         m_uncompressed_trace = NULL;
     }
-    m_seq_map.clear();
+    m_ruby_port_map.clear();
 }
 
 void
@@ -94,13 +92,19 @@ CacheRecorder::enqueueNextFlushRequest()
                                              Request::funcRequestorId);
         MemCmd::Command requestType = MemCmd::FlushReq;
         Packet *pkt = new Packet(req, requestType);
+        pkt->req->setReqInstSeqNum(m_records_flushed);
 
-        Sequencer* m_sequencer_ptr = m_seq_map[rec->m_cntrl_id];
-        assert(m_sequencer_ptr != NULL);
-        m_sequencer_ptr->makeRequest(pkt);
+
+        RubyPort* m_ruby_port_ptr = m_ruby_port_map[rec->m_cntrl_id];
+        assert(m_ruby_port_ptr != NULL);
+        m_ruby_port_ptr->makeRequest(pkt);
 
         DPRINTF(RubyCacheTrace, "Flushing %s\n", *rec);
+
     } else {
+        if (m_records_flushed > 0) {
+            exitSimLoop("Finished Drain", 0);
+        }
         DPRINTF(RubyCacheTrace, "Flushed all %d records\n", m_records_flushed);
     }
 }
@@ -115,7 +119,7 @@ CacheRecorder::enqueueNextFetchRequest()
         DPRINTF(RubyCacheTrace, "Issuing %s\n", *traceRecord);
 
         for (int rec_bytes_read = 0; rec_bytes_read < m_block_size_bytes;
-                rec_bytes_read += RubySystem::getBlockSizeBytes()) {
+                rec_bytes_read += m_block_size_bytes) {
             RequestPtr req;
             MemCmd::Command requestType;
 
@@ -123,33 +127,37 @@ CacheRecorder::enqueueNextFetchRequest()
                 requestType = MemCmd::ReadReq;
                 req = std::make_shared<Request>(
                     traceRecord->m_data_address + rec_bytes_read,
-                    RubySystem::getBlockSizeBytes(), 0,
+                    m_block_size_bytes, 0,
                                     Request::funcRequestorId);
             }   else if (traceRecord->m_type == RubyRequestType_IFETCH) {
                 requestType = MemCmd::ReadReq;
                 req = std::make_shared<Request>(
                         traceRecord->m_data_address + rec_bytes_read,
-                        RubySystem::getBlockSizeBytes(),
+                        m_block_size_bytes,
                         Request::INST_FETCH, Request::funcRequestorId);
             }   else {
                 requestType = MemCmd::WriteReq;
                 req = std::make_shared<Request>(
                     traceRecord->m_data_address + rec_bytes_read,
-                    RubySystem::getBlockSizeBytes(), 0,
+                    m_block_size_bytes, 0,
                                 Request::funcRequestorId);
             }
 
             Packet *pkt = new Packet(req, requestType);
             pkt->dataStatic(traceRecord->m_data + rec_bytes_read);
+            pkt->req->setReqInstSeqNum(m_records_read);
 
-            Sequencer* m_sequencer_ptr = m_seq_map[traceRecord->m_cntrl_id];
-            assert(m_sequencer_ptr != NULL);
-            m_sequencer_ptr->makeRequest(pkt);
+
+            RubyPort* m_ruby_port_ptr =
+                m_ruby_port_map[traceRecord->m_cntrl_id];
+            assert(m_ruby_port_ptr != NULL);
+            m_ruby_port_ptr->makeRequest(pkt);
         }
 
         m_bytes_read += (sizeof(TraceRecord) + m_block_size_bytes);
         m_records_read++;
     } else {
+        exitSimLoop("Finished Warmup", 0);
         DPRINTF(RubyCacheTrace, "Fetched all %d records\n", m_records_read);
     }
 }
@@ -168,6 +176,8 @@ CacheRecorder::addRecord(int cntrl, Addr data_addr, Addr pc_addr,
     memcpy(rec->m_data, data.getData(0, m_block_size_bytes),
            m_block_size_bytes);
 
+    DPRINTF(RubyCacheTrace, "Inside addRecord with cntrl id %d and type %d\n",
+            cntrl, type);
     m_records.push_back(rec);
 }
 
@@ -205,6 +215,12 @@ CacheRecorder::aggregateRecords(uint8_t **buf, uint64_t total_size)
 
     m_records.clear();
     return current_size;
+}
+
+uint64_t
+CacheRecorder::getNumRecords() const
+{
+    return m_records.size();
 }
 
 } // namespace ruby

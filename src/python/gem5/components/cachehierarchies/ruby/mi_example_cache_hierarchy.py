@@ -24,20 +24,28 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from .caches.mi_example.l1_cache import L1Cache
-from .caches.mi_example.dma_controller import DMAController
-from .caches.mi_example.directory import Directory
-from .topologies.simple_pt2pt import SimplePt2Pt
-from .abstract_ruby_cache_hierarchy import AbstractRubyCacheHierarchy
-from ..abstract_cache_hierarchy import AbstractCacheHierarchy
-from ...boards.abstract_board import AbstractBoard
+from m5.objects import (
+    DMASequencer,
+    RubyPortProxy,
+    RubySequencer,
+    RubySystem,
+)
+
 from ....coherence_protocol import CoherenceProtocol
-from ....isas import ISA
 from ....utils.override import overrides
 from ....utils.requires import requires
 
+requires(coherence_protocol_required=CoherenceProtocol.MI_EXAMPLE)
 
-from m5.objects import RubySystem, RubySequencer, DMASequencer, RubyPortProxy
+from ....isas import ISA
+from ....utils.override import overrides
+from ...boards.abstract_board import AbstractBoard
+from ..abstract_cache_hierarchy import AbstractCacheHierarchy
+from .abstract_ruby_cache_hierarchy import AbstractRubyCacheHierarchy
+from .caches.mi_example.directory import Directory
+from .caches.mi_example.dma_controller import DMAController
+from .caches.mi_example.l1_cache import L1Cache
+from .topologies.simple_pt2pt import SimplePt2Pt
 
 
 class MIExampleCacheHierarchy(AbstractRubyCacheHierarchy):
@@ -46,7 +54,7 @@ class MIExampleCacheHierarchy(AbstractRubyCacheHierarchy):
     simple point-to-point topology.
     """
 
-    def __init__(self, size: str, assoc: str):
+    def __init__(self, size: str, assoc: int):
         """
         :param size: The size of each cache in the heirarchy.
         :param assoc: The associativity of each cache.
@@ -57,10 +65,12 @@ class MIExampleCacheHierarchy(AbstractRubyCacheHierarchy):
         self._assoc = assoc
 
     @overrides(AbstractCacheHierarchy)
+    def get_coherence_protocol(self):
+        return CoherenceProtocol.MI_EXAMPLE
+
+    @overrides(AbstractCacheHierarchy)
     def incorporate_cache(self, board: AbstractBoard) -> None:
-
-        requires(coherence_protocol_required=CoherenceProtocol.MI_EXAMPLE)
-
+        super().incorporate_cache(board)
         self.ruby_system = RubySystem()
 
         # Ruby's global network.
@@ -91,6 +101,7 @@ class MIExampleCacheHierarchy(AbstractRubyCacheHierarchy):
                 version=i,
                 dcache=cache.cacheMemory,
                 clk_domain=cache.clk_domain,
+                ruby_system=self.ruby_system,
             )
 
             if board.has_io_bus():
@@ -136,7 +147,11 @@ class MIExampleCacheHierarchy(AbstractRubyCacheHierarchy):
                 ctrl = DMAController(
                     self.ruby_system.network, board.get_cache_line_size()
                 )
-                ctrl.dma_sequencer = DMASequencer(version=i, in_ports=port)
+                ctrl.dma_sequencer = DMASequencer(
+                    version=i,
+                    in_ports=port,
+                    ruby_system=self.ruby_system,
+                )
 
                 ctrl.ruby_system = self.ruby_system
                 ctrl.dma_sequencer.ruby_system = self.ruby_system
@@ -163,5 +178,13 @@ class MIExampleCacheHierarchy(AbstractRubyCacheHierarchy):
 
         # Set up a proxy port for the system_port. Used for load binaries and
         # other functional-only things.
-        self.ruby_system.sys_port_proxy = RubyPortProxy()
+        self.ruby_system.sys_port_proxy = RubyPortProxy(
+            ruby_system=self.ruby_system
+        )
         board.connect_system_port(self.ruby_system.sys_port_proxy.in_ports)
+
+    @overrides(AbstractRubyCacheHierarchy)
+    def _reset_version_numbers(self):
+        Directory._version = 0
+        L1Cache._version = 0
+        DMAController._version = 0

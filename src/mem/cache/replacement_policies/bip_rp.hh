@@ -42,6 +42,7 @@
 #ifndef __MEM_CACHE_REPLACEMENT_POLICIES_BIP_RP_HH__
 #define __MEM_CACHE_REPLACEMENT_POLICIES_BIP_RP_HH__
 
+#include "base/random.hh"
 #include "mem/cache/replacement_policies/lru_rp.hh"
 
 namespace gem5
@@ -49,7 +50,6 @@ namespace gem5
 
 struct BIPRPParams;
 
-GEM5_DEPRECATED_NAMESPACE(ReplacementPolicy, replacement_policy);
 namespace replacement_policy
 {
 
@@ -61,6 +61,8 @@ class BIP : public LRU
      * if a new entry is inserted at the MRU or LRU position.
      */
     const unsigned btp;
+
+    mutable Random::RandomPtr rng = Random::genRandom();
 
   public:
     typedef BIPRPParams Params;

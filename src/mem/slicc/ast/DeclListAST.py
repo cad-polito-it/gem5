@@ -37,7 +37,7 @@ class DeclListAST(AST):
         self.decls = decls
 
     def __repr__(self):
-        return "[DeclListAST: %s]" % (", ".join(repr(d) for d in self.decls))
+        return f"[DeclListAST: {', '.join(repr(d) for d in self.decls)}]"
 
     def files(self, parent=None):
         s = set()
@@ -49,3 +49,12 @@ class DeclListAST(AST):
         for decl in self.decls:
             decl.findMachines()
             decl.generate()
+
+    def setShared(self):
+        """Mark all types in this DeclList as shared"""
+        for decl in self.decls:
+            decl.setShared(True)
+
+    def __iadd__(self, other):
+        self.decls += other.decls
+        return self

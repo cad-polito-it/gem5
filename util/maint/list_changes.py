@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# Copyright (c) 2017-2018 Arm Limited
+# Copyright (c) 2017-2018, 2024 Arm Limited
 # All rights reserved
 #
 # The license below extends only to copyright in the software and shall
@@ -36,12 +36,12 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-import subprocess
 import re
+import subprocess
 from functools import wraps
 
 
-class Commit(object):
+class Commit:
     _re_tag = re.compile(r"^((?:\w|-)+): (.*)$")
 
     def __init__(self, rev):
@@ -88,23 +88,23 @@ class Commit(object):
         return self._tags
 
     @property
-    def change_id(self):
-        """Get the Change-Id tag from the commit
+    def change_ids(self):
+        """Get the Change-Id tag(s) from the commit
 
-        Returns: A change ID or None if no change ID has been
-        specified.
+        Returns: A list of change IDs. May be empty if no change IDs
+        have been specified.
 
         """
+
         try:
             cids = self.tags["Change-Id"]
         except KeyError:
-            return None
+            return list()
 
-        assert len(cids) == 1
-        return cids[0]
+        return cids[:]
 
     def __str__(self):
-        return "%s: %s" % (self.rev[0:8], self.log[0])
+        return f"{self.rev[0:8]}: {self.log[0]}"
 
 
 def list_revs(branch, baseline=None, paths=[]):
@@ -117,7 +117,7 @@ def list_revs(branch, baseline=None, paths=[]):
     """
 
     if baseline is not None:
-        query = "%s..%s" % (branch, baseline)
+        query = f"{branch}..{baseline}"
     else:
         query = str(branch)
 
@@ -137,32 +137,26 @@ def list_changes(upstream, feature, paths=[]):
     feature_revs = tuple(list_revs(upstream, feature, paths=paths))
     upstream_revs = tuple(list_revs(feature, upstream, paths=paths))
 
-    feature_cids = dict(
-        [(c.change_id, c) for c in feature_revs if c.change_id is not None]
-    )
-    upstream_cids = dict(
-        [(c.change_id, c) for c in upstream_revs if c.change_id is not None]
-    )
+    feature_cids = {cid: c for c in feature_revs for cid in c.change_ids}
+    upstream_cids = {cid: c for c in upstream_revs for cid in c.change_ids}
 
     incoming = [
         r
         for r in reversed(upstream_revs)
-        if r.change_id and r.change_id not in feature_cids
+        if any(rcid not in feature_cids for rcid in r.change_ids)
     ]
     outgoing = [
         r
         for r in reversed(feature_revs)
-        if r.change_id and r.change_id not in upstream_cids
+        if any(rcid not in upstream_cids for rcid in r.change_ids)
     ]
     common = [
-        r for r in reversed(feature_revs) if r.change_id in upstream_cids
+        r
+        for r in reversed(feature_revs)
+        if any(rcid in upstream_cids for rcid in r.change_ids)
     ]
-    upstream_unknown = [
-        r for r in reversed(upstream_revs) if r.change_id is None
-    ]
-    feature_unknown = [
-        r for r in reversed(feature_revs) if r.change_id is None
-    ]
+    upstream_unknown = [r for r in reversed(upstream_revs) if not r.change_ids]
+    feature_unknown = [r for r in reversed(feature_revs) if not r.change_ids]
 
     return incoming, outgoing, common, upstream_unknown, feature_unknown
 
@@ -178,15 +172,15 @@ def _main():
         "--upstream",
         "-u",
         type=str,
-        default="origin/master",
-        help="Upstream branch for comparison. " "Default: %(default)s",
+        default="origin/develop",
+        help="Upstream branch for comparison. Default: %(default)s",
     )
     parser.add_argument(
         "--feature",
         "-f",
         type=str,
         default="HEAD",
-        help="Feature branch for comparison. " "Default: %(default)s",
+        help="Feature branch for comparison. Default: %(default)s",
     )
     parser.add_argument(
         "--show-unknown",
@@ -199,7 +193,7 @@ def _main():
     parser.add_argument(
         "--deep-search",
         action="store_true",
-        help="Use a deep search to find incorrectly " "rebased changes",
+        help="Use a deep search to find incorrectly rebased changes",
     )
     parser.add_argument(
         "paths",
@@ -251,15 +245,13 @@ def _main():
     if args.deep_search:
         print("Incorrectly rebased changes:")
         all_upstream_revs = list_revs(args.upstream, paths=args.paths)
-        all_upstream_cids = dict(
-            [
-                (c.change_id, c)
-                for c in all_upstream_revs
-                if c.change_id is not None
-            ]
-        )
+        all_upstream_cids = {
+            cid: c for c in all_upstream_revs for cid in c.change_ids
+        }
         incorrect_outgoing = [
-            r for r in outgoing if r.change_id in all_upstream_cids
+            r
+            for r in outgoing
+            if any(rcid in all_upstream_cids for rcid in r.change_ids)
         ]
         for rev in incorrect_outgoing:
             print(rev)

@@ -1,4 +1,4 @@
-# Copyright (c) 2021 ARM Limited
+# Copyright (c) 2021, 2024 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -34,8 +34,9 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import m5
-from m5.objects import *
 from m5.defines import buildEnv
+from m5.objects import *
+
 from .Ruby import create_topology
 
 
@@ -53,8 +54,8 @@ def define_options(parser):
 
 def read_config_file(file):
     """Read file as a module and return it"""
-    import types
     import importlib.machinery
+    import types
 
     loader = importlib.machinery.SourceFileLoader("chi_configs", file)
     chi_configs = types.ModuleType(loader.name)
@@ -65,7 +66,6 @@ def read_config_file(file):
 def create_system(
     options, full_system, system, dma_ports, bootmem, ruby_system, cpus
 ):
-
     if buildEnv["PROTOCOL"] != "CHI":
         m5.panic("This script requires the CHI build")
 
@@ -102,32 +102,6 @@ def create_system(
     CHI_RNI_DMA = chi_defs.CHI_RNI_DMA
     CHI_RNI_IO = chi_defs.CHI_RNI_IO
 
-    # Declare caches and controller types used by the protocol
-    # Notice tag and data accesses are not concurrent, so the a cache hit
-    # latency = tag + data + response latencies.
-    # Default response latencies are 1 cy for all controllers.
-    # For L1 controllers the mandatoryQueue enqueue latency is always 1 cy and
-    # this is deducted from the initial tag read latency for sequencer requests
-    # dataAccessLatency may be set to 0 if one wants to consider parallel
-    # data and tag lookups
-    class L1ICache(RubyCache):
-        dataAccessLatency = 1
-        tagAccessLatency = 1
-        size = options.l1i_size
-        assoc = options.l1i_assoc
-
-    class L1DCache(RubyCache):
-        dataAccessLatency = 2
-        tagAccessLatency = 1
-        size = options.l1d_size
-        assoc = options.l1d_assoc
-
-    class L2Cache(RubyCache):
-        dataAccessLatency = 6
-        tagAccessLatency = 2
-        size = options.l2_size
-        assoc = options.l2_assoc
-
     class HNFCache(RubyCache):
         dataAccessLatency = 10
         tagAccessLatency = 2
@@ -147,25 +121,23 @@ def create_system(
 
     # Creates on RNF per cpu with priv l2 caches
     assert len(cpus) == options.num_cpus
-    ruby_system.rnf = [
-        CHI_RNF(
-            [cpu],
-            ruby_system,
-            L1ICache,
-            L1DCache,
-            system.cache_line_size.value,
-        )
-        for cpu in cpus
-    ]
+
+    rnf_cb = getattr(system, "_rnf_gen", CHI_RNF.generate)
+
+    # Generate the Request Nodes
+    ruby_system.rnf = rnf_cb(options, ruby_system, cpus)
+
     for rnf in ruby_system.rnf:
-        rnf.addPrivL2Cache(L2Cache)
         cpu_sequencers.extend(rnf.getSequencers())
         all_cntrls.extend(rnf.getAllControllers())
         network_nodes.append(rnf)
         network_cntrls.extend(rnf.getNetworkSideControllers())
 
-    # Creates one Misc Node
-    ruby_system.mn = [CHI_MN(ruby_system, [cpu.l1d for cpu in cpus])]
+    mn_cb = getattr(system, "_mn_gen", CHI_MN.generate)
+
+    # Generate the Misc Nodes
+    ruby_system.mn = mn_cb(options, ruby_system, cpus)
+
     for mn in ruby_system.mn:
         all_cntrls.extend(mn.getAllControllers())
         network_nodes.append(mn)
@@ -280,6 +252,6 @@ def create_system(
     elif options.topology in ["Crossbar", "Pt2Pt"]:
         topology = create_topology(network_cntrls, options)
     else:
-        m5.fatal("%s not supported!" % options.topology)
+        m5.fatal(f"{options.topology} not supported!")
 
     return (cpu_sequencers, mem_cntrls, topology)

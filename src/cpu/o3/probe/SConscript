@@ -37,11 +37,16 @@
 
 Import('*')
 
-if not env['CONF']['USE_NULL_ISA']:
+if env['CONF']['BUILD_ISA']:
     SimObject('SimpleTrace.py', sim_objects=['SimpleTrace'])
     Source('simple_trace.cc')
     DebugFlag('SimpleTrace')
 
-    SimObject('ElasticTrace.py', sim_objects=['ElasticTrace'], tags='protobuf')
-    Source('elastic_trace.cc', tags='protobuf')
-    DebugFlag('ElasticTrace', tags='protobuf')
+    if env['CONF']['HAVE_PROTOBUF']:
+        SimObject(
+            'ElasticTrace.py',
+            sim_objects=['ElasticTrace'],
+            tags=['protobuf']
+        )
+        Source('elastic_trace.cc', tags=['protobuf'])
+        DebugFlag('ElasticTrace', tags=['protobuf'])

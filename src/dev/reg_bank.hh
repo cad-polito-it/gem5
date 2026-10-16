@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2024 Arm Limited
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright 2020 Google, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,11 +49,15 @@
 #include <initializer_list>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <utility>
 
+#include "base/addr_range.hh"
 #include "base/bitfield.hh"
+#include "base/debug.hh"
 #include "base/logging.hh"
+#include "base/trace.hh"
 #include "base/types.hh"
 #include "sim/byteswap.hh"
 #include "sim/serialize_handlers.hh"
@@ -84,15 +100,38 @@
  * entire device, with the address from accesses passed into read or write
  * unmodified.
  *
- * To add actual registers to the RegisterBank (discussed below), you can use
- * either the addRegister method which adds a single register, or addRegisters
- * which adds an initializer list of them all at once. The register will be
- * appended to the end of the bank as they're added, contiguous to the
- * existing registers. The size of the bank is automatically accumulated as
- * registers are added.
- *
  * The base(), size() and name() methods can be used to access each of those
  * read only properties of the RegisterBank instance.
+ *
+ * To add actual registers to the RegisterBank (discussed below), you can use
+ * either the addRegister method which adds a single register, or
+ * addRegisters/addRegistersAt which add an initializer list of them all at
+ * once.
+ *
+ * For addRegister and addRegisters, the registers will be appended to
+ * the end of the bank as they're added, contiguous to the existing registers.
+ * The size of the bank is automatically accumulated as registers are added.
+ *
+ * For addRegistersAt, an offset field is used to instruct the bank where the
+ * register should be mapped. So the entries of the initializer list will be a
+ * set of offset-register pair.  The method is templated and the template
+ * parameter tells the bank which register type should be used to fill the
+ * remaining space. We make the RegBank the owner of this filler space
+ * (registers are generated internally within addRegistersAt).
+ *
+ * When adding a lot of registers with addRegisters, you might accidentally add
+ * an extra, or accidentally skip one in a long list. Because the offset is
+ * handled automatically, some of your registers might end up shifted higher or
+ * lower than you expect. To help mitigate this, you can set what offset you
+ * expect a register to have by specifying it as an offset, register pair.
+ *
+ * addRegisters({{0x1000, reg0}, reg1, reg2});
+ *
+ * If the register would end up at a different offset, gem5 will panic. You
+ * can also leave off the register if you want to just check the offset, for
+ * instance between groups of registers.
+ *
+ * addRegisters({reg0, reg1, reg2, 0x100c})
  *
  * While the RegisterBank itself doesn't have any data in it directly and so
  * has no endianness, it's very likely all the registers within it will have
@@ -101,6 +140,11 @@
  * within it. The RegisterBank class is templated on its endianness. There are
  * RegisterBankLE and RegisterBankBE aliases to make it a little easier to
  * refer to one or the other version.
+ *
+ * A RegisterBank also has a reset() method which will (by default) call the
+ * reset() method on each register within it. This method is virtual, and so
+ * can be overridden if something additional or different needs to be done to
+ * reset the hardware model.
  *
  *
  * == Register interface ==
@@ -129,6 +173,12 @@
  * doesn't need to be serialized (for instance if it has a fixed value) then
  * it still has to implement these methods, but they don't have to actually do
  * anything.
+ *
+ * Each register also has a "reset" method, which will reset the register as
+ * if its containing device is being reset. By default, this will just restore
+ * the initial value of the register, but can be overridden to implement
+ * additional behavior like resetting other aspects of the device which are
+ * controlled by the value of the register.
  *
  *
  * == Basic Register types ==
@@ -244,6 +294,12 @@
  * is an alternative form of update which also takes a custom bitmask, if you
  * need to update bits other than the normally writeable ones.
  *
+ * Similarly, you can set a "resetter" handler which is responsible for
+ * resetting the register. It takes a reference to the current Register, and
+ * no other parameters. The "initialValue" accessor can retrieve the value the
+ * register was constructed with. The register is simply set to this value
+ * in the default resetter implementation.
+ *
  * = Read only bits =
  *
  * Often registers have bits which are fixed and not affected by writes. To
@@ -345,6 +401,9 @@ class RegisterBank : public RegisterBankBase
         // Methods for implementing serialization for checkpoints.
         virtual void serialize(std::ostream &os) const = 0;
         virtual bool unserialize(const std::string &s) = 0;
+
+        // Reset the register.
+        virtual void reset() = 0;
     };
 
     // Filler registers which return a fixed pattern.
@@ -373,6 +432,9 @@ class RegisterBank : public RegisterBankBase
 
         void serialize(std::ostream &os) const override {}
         bool unserialize(const std::string &s) override { return true; }
+
+        // Resetting a read only register doesn't need to do anything.
+        void reset() override {}
     };
 
     // Register which reads as all zeroes.
@@ -438,6 +500,10 @@ class RegisterBank : public RegisterBankBase
         void serialize(std::ostream &os) const override {}
         bool unserialize(const std::string &s) override { return true; }
 
+        // Assume since the buffer is managed externally, it will be reset
+        // externally.
+        void reset() override {}
+
       protected:
         /**
          * This method exists so that derived classes that need to initialize
@@ -501,6 +567,8 @@ class RegisterBank : public RegisterBankBase
 
             return true;
         }
+
+        void reset() override { buffer = std::array<uint8_t, BufBytes>{}; }
     };
 
     template <typename Data, ByteOrder RegByteOrder=BankByteOrder>
@@ -516,15 +584,18 @@ class RegisterBank : public RegisterBankBase
         using WriteFunc = std::function<void (This &reg, const Data &value)>;
         using PartialWriteFunc = std::function<
             void (This &reg, const Data &value, int first, int last)>;
+        using ResetFunc = std::function<void (This &reg)>;
 
       private:
         Data _data = {};
+        Data _resetData = {};
         Data _writeMask = mask(sizeof(Data) * 8);
 
         ReadFunc _reader = defaultReader;
         WriteFunc _writer = defaultWriter;
         PartialWriteFunc _partialWriter = defaultPartialWriter;
         PartialReadFunc _partialReader = defaultPartialReader;
+        ResetFunc _resetter = defaultResetter;
 
       protected:
         static Data defaultReader(This &reg) { return reg.get(); }
@@ -546,6 +617,12 @@ class RegisterBank : public RegisterBankBase
         {
             reg._writer(reg, writeWithMask<Data>(reg._reader(reg), value,
                                                  mask(first, last)));
+        }
+
+        static void
+        defaultResetter(This &reg)
+        {
+            reg.get() = reg.initialValue();
         }
 
         constexpr Data
@@ -587,11 +664,13 @@ class RegisterBank : public RegisterBankBase
 
         // Constructor and move constructor with an initial data value.
         constexpr Register(const std::string &new_name, const Data &new_data) :
-            RegisterBase(new_name, sizeof(Data)), _data(new_data)
+            RegisterBase(new_name, sizeof(Data)), _data(new_data),
+            _resetData(new_data)
         {}
         constexpr Register(const std::string &new_name,
                            const Data &&new_data) :
-            RegisterBase(new_name, sizeof(Data)), _data(new_data)
+            RegisterBase(new_name, sizeof(Data)), _data(new_data),
+            _resetData(new_data)
         {}
 
         // Set which bits of the register are writeable.
@@ -680,6 +759,33 @@ class RegisterBank : public RegisterBankBase
             return partialWriter(wrapper);
         }
 
+        // Set the callables which handle resetting.
+        //
+        // The default resetter restores the initial value used in the
+        // constructor.
+        constexpr This &
+        resetter(const ResetFunc &new_resetter)
+        {
+            _resetter = new_resetter;
+            return *this;
+        }
+        template <class Parent, class... Args>
+        constexpr This &
+        resetter(Parent *parent, void (Parent::*nr)(Args... args))
+        {
+            auto wrapper = [parent, nr](Args&&... args) {
+                return (parent->*nr)(std::forward<Args>(args)...);
+            };
+            return resetter(wrapper);
+        }
+
+        // An accessor which returns the initial value as set in the
+        // constructor. This is intended to be used in a resetter function.
+        const Data &initialValue() const { return _resetData; }
+
+        // Reset the initial value, which is normally set in the constructor,
+        // to the register's current value.
+        void resetInitialValue() { _resetData = _data; }
 
         /*
          * Interface for accessing the register's state, for use by the
@@ -774,14 +880,36 @@ class RegisterBank : public RegisterBankBase
         {
             return ParseParam<Data>::parse(s, get());
         }
+
+        // Reset our data to its initial value.
+        void reset() override { _resetter(*this); }
     };
+
+    // Allow gem5 models to set a debug flag to the register bank for logging
+    // all full/partial read/write access to the registers. The register bank
+    // would not log if the flag is not set.
+    //
+    // The debug flag is the one declared in the SConscript
+    //
+    // DebugFlag('HelloExample')
+    //
+    // Then the flag can be set in the register bank with:
+    //
+    // setDebugFlag(::gem5::debug::HelloExample)
+    void
+    setDebugFlag(const ::gem5::debug::SimpleFlag& flag)
+    {
+        _debug_flag = &flag;
+    }
 
   private:
     std::map<Addr, std::reference_wrapper<RegisterBase>> _offsetMap;
 
+    const ::gem5::debug::SimpleFlag* _debug_flag = nullptr;
     Addr _base = 0;
     Addr _size = 0;
     const std::string _name;
+    std::vector<std::unique_ptr<RegisterBase>> owned;
 
   public:
 
@@ -805,23 +933,101 @@ class RegisterBank : public RegisterBankBase
 
     virtual ~RegisterBank() {}
 
-    void
-    addRegisters(
-            std::initializer_list<std::reference_wrapper<RegisterBase>> regs)
+    RegisterBank(RegisterBank &&) = default;
+
+    class RegisterAdder
     {
-        panic_if(regs.size() == 0, "Adding an empty list of registers to %s?",
-                 name());
-        for (auto &reg: regs) {
-            _offsetMap.emplace(_base + _size, reg);
-            _size += reg.get().size();
+      private:
+        std::optional<Addr> offset;
+        std::optional<RegisterBase *> reg;
+
+      public:
+        // Nothing special to do for this register.
+        RegisterAdder(RegisterBase &new_reg) : reg(&new_reg) {}
+        // Ensure that this register is added at a particular offset.
+        RegisterAdder(Addr new_offset, RegisterBase &new_reg) :
+            offset(new_offset), reg(&new_reg)
+        {}
+        // No register, just check that the offset is what we expect.
+        RegisterAdder(Addr new_offset) : offset(new_offset) {}
+
+        friend class RegisterBank;
+    };
+
+    void
+    addRegisters(std::initializer_list<RegisterAdder> adders)
+    {
+        panic_if(std::empty(adders),
+                "Adding an empty list of registers to %s?", name());
+        for (auto &adder: adders) {
+            const Addr offset = _base + _size;
+
+            if (adder.reg) {
+                auto *reg = adder.reg.value();
+                if (adder.offset && adder.offset.value() != offset) {
+                    panic(
+                        "Expected offset of register %s.%s to be %#x, is %#x.",
+                        name(), reg->name(), adder.offset.value(), offset);
+                }
+                _offsetMap.emplace(offset, *reg);
+                _size += reg->size();
+            } else if (adder.offset) {
+                if (adder.offset.value() != offset) {
+                    panic("Expected current offset of %s to be %#x, is %#x.",
+                        name(), adder.offset.value(), offset);
+                }
+            }
         }
     }
 
-    void addRegister(RegisterBase &reg) { addRegisters({reg}); }
+    template <class FillerReg>
+    void
+    addRegistersAt(std::initializer_list<RegisterAdder> adders)
+    {
+        panic_if(std::empty(adders),
+                "Adding an empty list of registers to %s?", name());
+
+        std::vector<RegisterAdder> vec{adders};
+        std::sort(vec.begin(), vec.end(),
+            [] (const auto& first, const auto& second) {
+                return first.offset.value() < second.offset.value();
+            }
+        );
+
+        for (auto &adder: vec) {
+            assert(adder.offset && adder.reg);
+            const Addr offset = _base + _size;
+
+            // Here we check if there is a hole (gap) between the start of the
+            // new register and the end of the current register bank. A positive
+            // gap means we need to fill the hole with the provided filler.
+            // If gap is negative, it means previous register is overlapping
+            // with the start address of the current one, and we should panic
+            if (int gap = adder.offset.value() - offset; gap != 0) {
+                panic_if(gap < 0, "Overlapping register added to the bank: %s\n",
+                         adder.reg.value()->name());
+
+                // Use the filler register to fill the address range gap
+                AddrRange hole_range(offset, offset + gap);
+                owned.push_back(std::make_unique<FillerReg>(hole_range.to_string(), gap));
+                _offsetMap.emplace(offset, *owned.back().get());
+                _size += gap;
+            }
+
+            // Now insert the register at the specified offset.
+            auto *reg = adder.reg.value();
+            _offsetMap.emplace(adder.offset.value(), *reg);
+            _size += reg->size();
+        }
+    }
+
+    void addRegister(RegisterAdder reg) { addRegisters({reg}); }
 
     Addr base() const { return _base; }
     Addr size() const { return _size; }
     const std::string &name() const { return _name; }
+    const std::map<Addr, std::reference_wrapper<RegisterBase>> &
+    offsetMap() const { return _offsetMap; }
 
     virtual void
     read(Addr addr, void *buf, Addr bytes)
@@ -838,45 +1044,32 @@ class RegisterBank : public RegisterBankBase
         if (it == _offsetMap.end() || it->first > addr)
             it--;
 
-        if (it->first < addr) {
-            RegisterBase &reg = it->second.get();
-            // Skip at least the beginning of the first register.
+        while (done != bytes) {
+          RegisterBase &reg = it->second.get();
+          const Addr reg_off = addr - it->first;
+          const Addr reg_size = reg.size() - reg_off;
+          const Addr reg_bytes = std::min(reg_size, bytes - done);
 
-            // Figure out what parts of it we're accessing.
-            const off_t reg_off = addr - it->first;
-            const size_t reg_bytes = std::min(reg.size() - reg_off,
-                                              bytes - done);
+          if (reg_bytes != reg.size()) {
+              if (_debug_flag && _debug_flag->tracing()) {
+                  ::gem5::trace::getDebugLogger()->dprintf_flag(
+                      curTick(), name(), _debug_flag->name(),
+                      "Read register %s, byte offset %d, size %d\n",
+                      reg.name(), reg_off, reg_bytes);
+              }
+              reg.read(ptr + done, reg_off, reg_bytes);
+          } else {
+              if (_debug_flag && _debug_flag->tracing()) {
+                  ::gem5::trace::getDebugLogger()->dprintf_flag(
+                      curTick(), name(), _debug_flag->name(),
+                      "Read register %s\n", reg.name());
+              }
+              reg.read(ptr + done);
+          }
 
-            // Actually do the access.
-            reg.read(ptr, reg_off, reg_bytes);
-            done += reg_bytes;
-            it++;
-
-            // Was that everything?
-            if (done == bytes)
-                return;
-        }
-
-        while (true) {
-            RegisterBase &reg = it->second.get();
-
-            const size_t reg_size = reg.size();
-            const size_t remaining = bytes - done;
-
-            if (remaining == reg_size) {
-                // A complete register read, and then we're done.
-                reg.read(ptr + done);
-                return;
-            } else if (remaining > reg_size) {
-                // A complete register read, with more to go.
-                reg.read(ptr + done);
-                done += reg_size;
-                it++;
-            } else {
-                // Skip the end of the register, and then we're done.
-                reg.read(ptr + done, 0, remaining);
-                return;
-            }
+          done += reg_bytes;
+          addr += reg_bytes;
+          ++it;
         }
     }
 
@@ -895,46 +1088,42 @@ class RegisterBank : public RegisterBankBase
         if (it == _offsetMap.end() || it->first > addr)
             it--;
 
-        if (it->first < addr) {
+        while (done != bytes) {
             RegisterBase &reg = it->second.get();
-            // Skip at least the beginning of the first register.
+            const Addr reg_off = addr - it->first;
+            const Addr reg_size = reg.size() - reg_off;
+            const Addr reg_bytes = std::min(reg_size, bytes - done);
 
-            // Figure out what parts of it we're accessing.
-            const off_t reg_off = addr - it->first;
-            const size_t reg_bytes = std::min(reg.size() - reg_off,
-                                              bytes - done);
-
-            // Actually do the access.
-            reg.write(ptr, reg_off, reg_bytes);
-            done += reg_bytes;
-            it++;
-
-            // Was that everything?
-            if (done == bytes)
-                return;
-        }
-
-        while (true) {
-            RegisterBase &reg = it->second.get();
-
-            const size_t reg_size = reg.size();
-            const size_t remaining = bytes - done;
-
-            if (remaining == reg_size) {
-                // A complete register write, and then we're done.
-                reg.write(ptr + done);
-                return;
-            } else if (remaining > reg_size) {
-                // A complete register write, with more to go.
-                reg.write(ptr + done);
-                done += reg_size;
-                it++;
+            if (reg_bytes != reg.size()) {
+                if (_debug_flag && _debug_flag->tracing()) {
+                    ::gem5::trace::getDebugLogger()->dprintf_flag(
+                        curTick(), name(), _debug_flag->name(),
+                        "Write register %s, byte offset %d, size %d\n",
+                        reg.name(), reg_off, reg_size);
+                }
+                reg.write(ptr + done, reg_off, reg_bytes);
             } else {
-                // Skip the end of the register, and then we're done.
-                reg.write(ptr + done, 0, remaining);
-                return;
+                if (_debug_flag && _debug_flag->tracing()) {
+                    ::gem5::trace::getDebugLogger()->dprintf_flag(
+                        curTick(), name(), _debug_flag->name(),
+                        "Write register %s\n", reg.name());
+                }
+                reg.write(ptr + done);
             }
+
+            done += reg_bytes;
+            addr += reg_bytes;
+            ++it;
         }
+
+    }
+
+    // By default, reset all the registers in the bank.
+    virtual void
+    reset()
+    {
+        for (auto &it: _offsetMap)
+            it.second.get().reset();
     }
 };
 

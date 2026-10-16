@@ -85,7 +85,7 @@ class Memoizer
     using ret_type = Ret;
     using args_type = std::tuple<Args...>;
 
-    constexpr Memoizer(Ret _func(Args...))
+    constexpr Memoizer(Ret (*_func)(Args...))
      : func(_func)
     {
         validateMemoizer();
@@ -158,6 +158,10 @@ class Memoizer
     mutable std::map<args_type, ret_type> cache;
 
 };
+
+// Deduction guide
+template <typename Ret, typename... Args>
+Memoizer(Ret (*)(Args...)) -> Memoizer<Ret, Args...>;
 
 } // namespace gem5
 

@@ -45,7 +45,7 @@ namespace gem5
 
 // The OS methods are called statically. Instantiate the random number
 // generator for access to /dev/urandom here.
-Random Linux::random;
+Random::RandomPtr Linux::random = Random::genRandom();
 
 int
 Linux::openSpecialFile(std::string path, Process *process,
@@ -58,19 +58,19 @@ Linux::openSpecialFile(std::string path, Process *process,
     bool matched = false;
     std::string data;
 
-    if (path.compare(0, 13, "/proc/meminfo") == 0) {
+    if (path == "/proc/meminfo") {
         data = Linux::procMeminfo(process, tc);
         matched = true;
-    } else if (path.compare(0, 11, "/etc/passwd") == 0) {
+    } else if (path == "/etc/passwd") {
         data = Linux::etcPasswd(process, tc);
         matched = true;
-    } else if (path.compare(0, 15, "/proc/self/maps") == 0) {
+    } else if (path == "/proc/self/maps") {
         data = Linux::procSelfMaps(process, tc);
         matched = true;
-    } else if (path.compare(0, 30, "/sys/devices/system/cpu/online") == 0) {
+    } else if (path == "/sys/devices/system/cpu/online") {
         data = Linux::cpuOnline(process, tc);
         matched = true;
-    } else if (path.compare(0, 12 ,"/dev/urandom") == 0) {
+    } else if (path == "/dev/urandom") {
         data = Linux::devRandom(process, tc);
         matched = true;
     }
@@ -128,7 +128,7 @@ Linux::devRandom(Process *process, ThreadContext *tc)
     std::stringstream line;
     int max = 1E5;
     for (int i = 0; i < max; i++) {
-        uint8_t rand_uint = random.random<uint8_t>(0, 255);
+        uint8_t rand_uint = random->random<uint8_t>(0, 255);
 
         line << rand_uint;
     }

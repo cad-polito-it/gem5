@@ -24,17 +24,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.params import *
-from m5.proxy import *
 from m5.objects.Cmos import Cmos
 from m5.objects.I8042 import I8042
-from m5.objects.I82094AA import I82094AA
 from m5.objects.I8237 import I8237
 from m5.objects.I8254 import I8254
 from m5.objects.I8259 import I8259
-from m5.objects.PciDevice import PciLegacyIoBar, PciIoBar
+from m5.objects.I82094AA import I82094AA
+from m5.objects.PciDevice import (
+    PciIoBar,
+    PciLegacyIoBar,
+)
 from m5.objects.PcSpeaker import PcSpeaker
 from m5.objects.X86Ide import X86IdeController
+from m5.params import *
+from m5.proxy import *
 from m5.SimObject import SimObject
 
 
@@ -74,9 +77,9 @@ class SouthBridge(SimObject):
     io_apic = Param.I82094AA(I82094AA(pio_addr=0xFEC00000), "I/O APIC")
 
     # IDE controller
-    ide = X86IdeController(disks=[], pci_func=0, pci_dev=4, pci_bus=0)
+    ide = X86IdeController(disks=[], pci_func=0, pci_dev=4)
 
-    def attachIO(self, bus, dma_ports):
+    def attachIO(self, bus, pci_bus, dma_ports):
         # Route interrupt signals
         self.pic1.output = self.io_apic.inputs[0]
         self.pic2.output = self.pic1.inputs[2]
@@ -95,9 +98,6 @@ class SouthBridge(SimObject):
         # Connect to the bus
         self.cmos.pio = bus.mem_side_ports
         self.dma1.pio = bus.mem_side_ports
-        self.ide.pio = bus.mem_side_ports
-        if dma_ports.count(self.ide.dma) == 0:
-            self.ide.dma = bus.cpu_side_ports
         self.keyboard.pio = bus.mem_side_ports
         self.pic1.pio = bus.mem_side_ports
         self.pic2.pio = bus.mem_side_ports
@@ -105,3 +105,6 @@ class SouthBridge(SimObject):
         self.speaker.pio = bus.mem_side_ports
         self.io_apic.pio = bus.mem_side_ports
         self.io_apic.int_requestor = bus.cpu_side_ports
+        # Connect PCI devices
+        self.ide.pio = pci_bus.mem_side_ports
+        self.ide.dma = pci_bus.cpu_side_ports

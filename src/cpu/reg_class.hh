@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019 ARM Limited
+ * Copyright (c) 2016-2019, 2025 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -45,6 +45,7 @@
 #include <iterator>
 #include <string>
 
+#include "arch/generic/vec_reg.hh"
 #include "base/cprintf.hh"
 #include "base/debug.hh"
 #include "base/intmath.hh"
@@ -64,6 +65,7 @@ enum RegClassType
     /** Vector Register Native Elem lane. */
     VecElemClass,
     VecPredRegClass,
+    MatRegClass,        ///< Matrix Register
     CCRegClass,         ///< Condition-code register
     MiscRegClass,       ///< Control (misc) register
     InvalidRegClass = -1
@@ -75,6 +77,7 @@ inline constexpr char FloatRegClassName[] = "floating_point";
 inline constexpr char VecRegClassName[] = "vector";
 inline constexpr char VecElemClassName[] = "vector_element";
 inline constexpr char VecPredRegClassName[] = "vector_predicate";
+inline constexpr char MatRegClassName[] = "matrix";
 inline constexpr char CCRegClassName[] = "condition_code";
 inline constexpr char MiscRegClassName[] = "miscellaneous";
 
@@ -165,15 +168,25 @@ class RegId
 class RegClassOps
 {
   public:
+    virtual ~RegClassOps() = default;
     /** Print the name of the register specified in id. */
     virtual std::string regName(const RegId &id) const;
     /** Print the value of a register pointed to by val of size size. */
-    virtual std::string valString(const void *val, size_t size) const;
+    virtual std::string valString(const void *val, const size_t& size) const;
     /** Flatten register id id using information in the ISA object isa. */
     virtual RegId
     flatten(const BaseISA &isa, const RegId &id) const
     {
         return id;
+    }
+    /**
+     * By default non renameable registers cannot be
+     * read/written speculatively
+     */
+    virtual bool
+    serializing(const RegId &id) const
+    {
+        return !id.isRenameable();
     }
 };
 
@@ -238,11 +251,22 @@ class RegClass
     constexpr const debug::Flag &debug() const { return debugFlag; }
     constexpr bool isFlat() const { return _flat; }
 
+    bool
+    isSerializing(const RegId &id) const
+    {
+        return _ops->serializing(id);
+    }
+
     std::string regName(const RegId &id) const { return _ops->regName(id); }
     std::string
     valString(const void *val) const
     {
         return _ops->valString(val, regBytes());
+    }
+    std::string
+    valString(const void *val, const size_t& num_bytes) const
+    {
+        return _ops->valString(val, std::min(regBytes(), num_bytes));
     }
     RegId
     flatten(const BaseISA &isa, const RegId &id) const
@@ -352,15 +376,30 @@ RegClass::operator[](RegIndex idx) const
     return RegId(*this, idx);
 }
 
+// Type matching for gem5::VecRegContainer class
+// This is used in TypedRegClassOps.
+template<typename>
+struct is_vec_reg_container : std::false_type {};
+template<std::size_t SIZE>
+struct is_vec_reg_container<gem5::VecRegContainer<SIZE>> : std::true_type {};
+
 template <typename ValueType>
 class TypedRegClassOps : public RegClassOps
 {
   public:
     std::string
-    valString(const void *val, size_t size) const override
+    valString(const void *val, const size_t& size) const override
     {
-        assert(size == sizeof(ValueType));
-        return csprintf("%s", *(const ValueType *)val);
+        if constexpr (is_vec_reg_container<ValueType>::value) {
+            if (size == sizeof(ValueType)) {
+                return csprintf("%s", *(const ValueType *)val);
+            } else {
+                return ((const ValueType *)val)->getString(size);
+            }
+        } else {
+            assert(size == sizeof(ValueType));
+            return csprintf("%s", *(const ValueType *)val);
+        }
     }
 };
 
@@ -444,6 +483,12 @@ class PhysRegId : private RegId
      * architectural register.
      */
     bool isFixedMapping() const { return !isRenameable(); }
+
+    bool
+    isAlwaysReady() const
+    {
+        return regClass().isSerializing(regClass()[index()]);
+    }
 
     /** Flat index accessor */
     const RegIndex& flatIndex() const { return flatIdx; }

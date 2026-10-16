@@ -1,4 +1,4 @@
-# Copyright (c) 2009-2022 Arm Limited
+# Copyright (c) 2009-2022, 2024 Arm Limited
 # All rights reserved.
 #
 # The license below extends only to copyright in the software and shall
@@ -37,48 +37,67 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 from m5.defines import buildEnv
+from m5.objects.ArmSystem import ArmExtension
+from m5.objects.CfiMemory import CfiMemory
+from m5.objects.ClockDomain import (
+    ClockDomain,
+    SrcClockDomain,
+)
+from m5.objects.ClockedObject import ClockedObject
+from m5.objects.Device import (
+    BadAddr,
+    BasicPioDevice,
+    DmaDevice,
+    IsaFake,
+    PioDevice,
+)
+from m5.objects.Display import (
+    Display,
+    Display1080p,
+)
+from m5.objects.EnergyCtrl import EnergyCtrl
+from m5.objects.Ethernet import (
+    IGbE_e1000,
+    IGbE_igb,
+    NSGigE,
+)
+from m5.objects.GenericTimer import *
+from m5.objects.Gic import *
+from m5.objects.Graphics import ImageFormat
+from m5.objects.Ide import *
+from m5.objects.MHU import (
+    MHU,
+    Ap2ScpDoorbell,
+    Scp2ApDoorbell,
+)
+from m5.objects.PciDevice import (
+    PciIoBar,
+    PciLegacyIoBar,
+)
+from m5.objects.PciHost import *
+from m5.objects.PciUpstream import PciBus
+from m5.objects.Platform import Platform
+from m5.objects.PS2 import *
+from m5.objects.Scmi import *
+from m5.objects.SimpleMemory import SimpleMemory
+from m5.objects.SMMUv3 import SMMUv3
+from m5.objects.SubSystem import SubSystem
+from m5.objects.Terminal import Terminal
+from m5.objects.Uart import Uart
+from m5.objects.VirtIOMMIO import MmioVirtIO
+from m5.objects.VoltageDomain import VoltageDomain
 from m5.params import *
 from m5.proxy import *
 from m5.util.fdthelper import *
-from m5.objects.ArmSystem import ArmExtension
-from m5.objects.ClockDomain import ClockDomain, SrcClockDomain
-from m5.objects.VoltageDomain import VoltageDomain
-from m5.objects.Device import (
-    BasicPioDevice,
-    PioDevice,
-    IsaFake,
-    BadAddr,
-    DmaDevice,
-)
-from m5.objects.PciHost import *
-from m5.objects.Ethernet import NSGigE, IGbE_igb, IGbE_e1000
-from m5.objects.Ide import *
-from m5.objects.Platform import Platform
-from m5.objects.Terminal import Terminal
-from m5.objects.Uart import Uart
-from m5.objects.SimpleMemory import SimpleMemory
-from m5.objects.GenericTimer import *
-from m5.objects.Gic import *
-from m5.objects.MHU import MHU, Scp2ApDoorbell, Ap2ScpDoorbell
-from m5.objects.EnergyCtrl import EnergyCtrl
-from m5.objects.ClockedObject import ClockedObject
-from m5.objects.SubSystem import SubSystem
-from m5.objects.Graphics import ImageFormat
-from m5.objects.ClockedObject import ClockedObject
-from m5.objects.PS2 import *
-from m5.objects.VirtIOMMIO import MmioVirtIO
-from m5.objects.Display import Display, Display1080p
-from m5.objects.Scmi import *
-from m5.objects.SMMUv3 import SMMUv3
-from m5.objects.PciDevice import PciLegacyIoBar, PciIoBar
-
-from m5.objects.CfiMemory import CfiMemory
 
 # Platforms with KVM support should generally use in-kernel GIC
 # emulation. Use a GIC model that automatically switches between
 # gem5's GIC model and KVM's GIC model if KVM is available.
 try:
-    from m5.objects.KvmGic import MuxingKvmGicV2, MuxingKvmGicV3
+    from m5.objects.KvmGic import (
+        MuxingKvmGicV2,
+        MuxingKvmGicV3,
+    )
 
     kvm_gicv2_class = MuxingKvmGicV2
     kvm_gicv3_class = MuxingKvmGicV3
@@ -117,7 +136,7 @@ class AmbaDmaDevice(DmaDevice):
     pio_addr = Param.Addr("Address for AMBA responder interface")
     pio_latency = Param.Latency(
         "10ns",
-        "Time between action and write/read" "result by AMBA DMA Device",
+        "Time between action and write/readresult by AMBA DMA Device",
     )
     interrupt = Param.ArmInterruptPin("Interrupt that connects to GIC")
     amba_id = Param.UInt32("ID of AMBA device for kernel detection")
@@ -248,7 +267,7 @@ class RealViewCtrl(BasicPioDevice):
     idreg = Param.UInt32(0x00000000, "ID Register, SYS_ID")
 
     def generateDeviceTree(self, state):
-        node = FdtNode("sysreg@%x" % int(self.pio_addr))
+        node = FdtNode(f"sysreg@{int(self.pio_addr):x}")
         node.appendCompatible("arm,vexpress-sysreg")
         node.append(
             FdtPropertyWords(
@@ -458,7 +477,7 @@ class FixedClock(SrcClockDomain):
     def generateDeviceTree(self, state):
         if len(self.clock) > 1:
             fatal("FixedClock configured with multiple frequencies")
-        node = FdtNode("clock{}".format(FixedClock._index))
+        node = FdtNode(f"clock{FixedClock._index}")
         node.appendCompatible("fixed-clock")
         node.append(FdtPropertyWords("#clock-cells", 0))
         node.append(
@@ -634,17 +653,17 @@ class HDLcd(AmbaDmaDevice):
     cxx_header = "dev/arm/hdlcd.hh"
     cxx_class = "gem5::HDLcd"
     vnc = Param.VncInput(
-        Parent.any, "Vnc server for remote frame buffer " "display"
+        Parent.any, "Vnc server for remote frame buffer display"
     )
     amba_id = 0x00141000
     workaround_swap_rb = Param.Bool(
-        False, "Workaround incorrect color " "selector order in some kernels"
+        False, "Workaround incorrect color selector order in some kernels"
     )
     workaround_dma_line_count = Param.Bool(
-        True, "Workaround incorrect " "DMA line count (off by 1)"
+        True, "Workaround incorrect DMA line count (off by 1)"
     )
     enable_capture = Param.Bool(
-        True, "capture frame to " "system.framebuffer.{extension}"
+        True, "capture frame to system.framebuffer.{extension}"
     )
     frame_format = Param.ImageFormat(
         "Auto", "image format of the captured frame"
@@ -655,7 +674,7 @@ class HDLcd(AmbaDmaDevice):
     pxl_clk = Param.ClockDomain("Pixel clock source")
     pixel_chunk = Param.Unsigned(32, "Number of pixels to handle in one batch")
     virt_refresh_rate = Param.Frequency(
-        "20Hz", "Frame refresh rate " "in KVM mode"
+        "20Hz", "Frame refresh rate in KVM mode"
     )
     _status = "ok"
 
@@ -743,7 +762,7 @@ class MmioSRAM(ParentMem):
         super().__init__(**kwargs)
 
     def generateDeviceTree(self, state):
-        node = FdtNode("sram@%x" % int(self.range.start))
+        node = FdtNode(f"sram@{int(self.range.start):x}")
         node.appendCompatible(["mmio-sram"])
         node.append(
             FdtPropertyWords(
@@ -829,6 +848,9 @@ class RealView(Platform):
     def _off_chip_memory(self):
         return []
 
+    def _platform_pci_devices(self):
+        return []
+
     _off_chip_ranges = []
 
     def _attach_memory(self, mem, bus, mem_ports=None):
@@ -847,6 +869,11 @@ class RealView(Platform):
             else:
                 dma_ports.append(device.dma)
 
+    def _attach_pci_device(self, device, upstream, bus):
+        device.pio = bus.mem_side_ports
+        device.dma = bus.cpu_side_ports
+        device.upstream = upstream
+
     def _attach_io(self, devices, *args, **kwargs):
         for d in devices:
             self._attach_device(d, *args, **kwargs)
@@ -855,12 +882,18 @@ class RealView(Platform):
         for mem in memories:
             self._attach_memory(mem, *args, **kwargs)
 
+    def _attach_pci(self, devices, bus, dma_ports=None):
+        pass
+
     def _attach_clk(self, devices, clkdomain):
         for d in devices:
             if hasattr(d, "clk_domain"):
                 d.clk_domain = clkdomain
 
-    def attachPciDevices(self):
+    def attachPciDevice(self, device):
+        pass
+
+    def attachPlatformPciDevices(self):
         pass
 
     def enableMSIX(self):
@@ -881,6 +914,7 @@ class RealView(Platform):
     def attachIO(self, bus, dma_ports=None, mem_ports=None):
         self._attach_mem(self._off_chip_memory(), bus, mem_ports)
         self._attach_io(self._off_chip_devices(), bus, dma_ports)
+        self._attach_pci(self._platform_pci_devices(), bus, dma_ports)
 
     def setupBootLoader(self, cur_sys, boot_loader, dtb_addr, load_offset):
         cur_sys.workload.boot_loader = boot_loader
@@ -978,6 +1012,7 @@ class VExpress_EMM(RealView):
         conf_device_bits=16,
         pci_pio_base=0,
     )
+    pci_bus = PciBus()
 
     sys_counter = SystemCounter()
     generic_timer = GenericTimer(
@@ -1015,7 +1050,6 @@ class VExpress_EMM(RealView):
         disks=[],
         pci_func=0,
         pci_dev=0,
-        pci_bus=2,
         io_shift=2,
         ctrl_offset=2,
         Command=0x1,
@@ -1045,13 +1079,11 @@ class VExpress_EMM(RealView):
         devices = [
             self.uart,
             self.realview_io,
-            self.pci_host,
             self.timer0,
             self.timer1,
             self.clcd,
             self.kmi0,
             self.kmi1,
-            self.cf_ctrl,
             self.rtc,
             self.vram,
             self.l2x0_fake,
@@ -1066,6 +1098,12 @@ class VExpress_EMM(RealView):
             self.mmc_fake,
             self.energy_ctrl,
         ]
+        return devices
+
+    def _platform_pci_devices(self):
+        devices = [
+            self.cf_ctrl,
+        ]
         # Try to attach the I/O if it exists
         if hasattr(self, "ide"):
             devices.append(self.ide)
@@ -1074,18 +1112,34 @@ class VExpress_EMM(RealView):
         return devices
 
     # Attach any PCI devices that are supported
-    def attachPciDevices(self):
+    def attachPlatformPciDevices(self):
         self.ethernet = IGbE_e1000(
-            pci_bus=0, pci_dev=0, pci_func=0, InterruptLine=1, InterruptPin=1
+            pci_dev=0, pci_func=0, InterruptLine=1, InterruptPin=1
         )
         self.ide = IdeController(
             disks=[],
-            pci_bus=0,
             pci_dev=1,
             pci_func=0,
             InterruptLine=2,
             InterruptPin=2,
         )
+
+    def attachPciDevice(self, device):
+        self._attach_pci_device(device, self.pci_host, self.pci_bus)
+
+    def _attach_pci(self, devices, bus, dma_ports=None):
+        self.pci_bus.cpu_side_ports = self.pci_host.down_request_port()
+        self.pci_bus.default = self.pci_host.down_response_port()
+        self.pci_bus.config_error_port = self.pci_host.config_error.pio
+
+        bus.mem_side_ports = self.pci_host.up_response_port()
+        if dma_ports is None:
+            bus.cpu_side_ports = self.pci_host.up_request_port()
+        else:
+            dma_ports.append(self.pci_host.up_request_port())
+
+        for d in devices:
+            self._attach_pci_device(d, self.pci_host, self.pci_bus)
 
     def enableMSIX(self):
         self.gic = Gic400(
@@ -1171,8 +1225,8 @@ class VExpress_GEM5_Base(RealView):
     Memory map:
        0x00000000-0x03ffffff: Boot memory (CS0)
        0x04000000-0x07ffffff: Trusted Memory/Reserved
-            0x04000000-0x0403FFFF: 256kB Trusted SRAM
-            0x06000000-0x07ffffff: 32MB Trusted DRAM
+            0x04000000-0x0403FFFF: 256KiB Trusted SRAM
+            0x06000000-0x07ffffff: 32MiB Trusted DRAM
        0x08000000-0x0bffffff: NOR FLASH0 (CS0 alias)
        0x0c000000-0x0fffffff: NOR FLASH1 (Off-chip, CS4)
        0x10000000-0x13ffffff: gem5-specific peripherals (Off-chip, CS5)
@@ -1265,6 +1319,7 @@ class VExpress_GEM5_Base(RealView):
              95    : HDLCD
              96- 98: GPU (reserved)
             100-103: PCI
+            106    : SMMU event queue
             130    : System Watchdog (SP805)
        256-319: MSI frame 0 (gem5-specific, SPIs)
        320-511: Unused
@@ -1297,7 +1352,7 @@ class VExpress_GEM5_Base(RealView):
     # Trusted DRAM
     # TODO: preventing access from unsecure world to the trusted RAM
     trusted_dram = SimpleMemory(
-        range=AddrRange(0x06000000, size="32MB"), conf_table_reported=False
+        range=AddrRange(0x06000000, size="32MiB"), conf_table_reported=False
     )
     # Non-Trusted SRAM
     non_trusted_sram = MmioSRAM(
@@ -1414,6 +1469,7 @@ class VExpress_GEM5_Base(RealView):
         int_base=100,
         int_count=4,
     )
+    pci_bus = PciBus()
 
     energy_ctrl = EnergyCtrl(pio_addr=0x10000000)
 
@@ -1435,7 +1491,7 @@ class VExpress_GEM5_Base(RealView):
 
     # VRAM
     vram = SimpleMemory(
-        range=AddrRange(0x18000000, size="32MB"), conf_table_reported=False
+        range=AddrRange(0x18000000, size="32MiB"), conf_table_reported=False
     )
 
     def _off_chip_devices(self):
@@ -1445,7 +1501,6 @@ class VExpress_GEM5_Base(RealView):
             self.kmi1,
             self.watchdog,
             self.rtc,
-            self.pci_host,
             self.energy_ctrl,
             self.pwr_ctrl,
             self.clock32KHz,
@@ -1464,13 +1519,25 @@ class VExpress_GEM5_Base(RealView):
         self.system_watchdog.clk_domain = self.dcc.osc_sys
         self.watchdog.clk_domain = self.clock32KHz
 
-    def attachPciDevice(self, device, *args, **kwargs):
-        device.host = self.pci_host
+    def attachPciDevice(self, device):
         self._num_pci_dev += 1
-        device.pci_bus = 0
         device.pci_dev = self._num_pci_dev
         device.pci_func = 0
-        self._attach_device(device, *args, **kwargs)
+        self._attach_pci_device(device, self.pci_host, self.pci_bus)
+
+    def _attach_pci(self, devices, bus, dma_ports=None):
+        self.pci_bus.cpu_side_ports = self.pci_host.down_request_port()
+        self.pci_bus.default = self.pci_host.down_response_port()
+        self.pci_bus.config_error_port = self.pci_host.config_error.pio
+
+        bus.mem_side_ports = self.pci_host.up_response_port()
+        if dma_ports is None:
+            bus.cpu_side_ports = self.pci_host.up_request_port()
+        else:
+            dma_ports.append(self.pci_host.up_request_port())
+
+        for d in devices:
+            self._attach_pci_device(d, self.pci_host, self.pci_bus)
 
     def attachSmmu(self, devices, bus):
         """
@@ -1490,7 +1557,10 @@ class VExpress_GEM5_Base(RealView):
         if hasattr(self, "smmu"):
             m5.fatal("A SMMU has already been instantiated\n")
 
-        self.smmu = SMMUv3(reg_map=AddrRange(0x2B400000, size=0x00020000))
+        self.smmu = SMMUv3(
+            reg_map=AddrRange(0x2B400000, size=0x00020000),
+            eventq_irq=ArmSPI(num=106),
+        )
 
         self.smmu.request = bus.cpu_side_ports
         self.smmu.control = bus.mem_side_ports

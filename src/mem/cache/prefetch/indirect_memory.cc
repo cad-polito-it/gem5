@@ -26,16 +26,14 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
- #include "mem/cache/prefetch/indirect_memory.hh"
+#include "mem/cache/prefetch/indirect_memory.hh"
 
- #include "mem/cache/base.hh"
- #include "mem/cache/prefetch/associative_set_impl.hh"
- #include "params/IndirectMemoryPrefetcher.hh"
+#include "params/IndirectMemoryPrefetcher.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Prefetcher, prefetch);
 namespace prefetch
 {
 
@@ -45,19 +43,26 @@ IndirectMemory::IndirectMemory(const IndirectMemoryPrefetcherParams &p)
     shiftValues(p.shift_values), prefetchThreshold(p.prefetch_threshold),
     streamCounterThreshold(p.stream_counter_threshold),
     streamingDistance(p.streaming_distance),
-    prefetchTable(p.pt_table_assoc, p.pt_table_entries,
-                  p.pt_table_indexing_policy, p.pt_table_replacement_policy,
-                  PrefetchTableEntry(p.num_indirect_counter_bits)),
-    ipd(p.ipd_table_assoc, p.ipd_table_entries, p.ipd_table_indexing_policy,
+    prefetchTable((name() + ".PrefetchTable").c_str(),
+                  p.pt_table_entries,
+                  p.pt_table_assoc,
+                  p.pt_table_replacement_policy,
+                  p.pt_table_indexing_policy,
+                  PrefetchTableEntry(p.num_indirect_counter_bits,
+                    genTagExtractor(p.pt_table_indexing_policy))),
+    ipd((name() + ".IPD").c_str(), p.ipd_table_entries, p.ipd_table_assoc,
         p.ipd_table_replacement_policy,
-        IndirectPatternDetectorEntry(p.addr_array_len, shiftValues.size())),
+        p.ipd_table_indexing_policy,
+        IndirectPatternDetectorEntry(p.addr_array_len, shiftValues.size(),
+            genTagExtractor(p.ipd_table_indexing_policy))),
     ipdEntryTrackingMisses(nullptr), byteOrder(p.sys->getGuestByteOrder())
 {
 }
 
 void
 IndirectMemory::calculatePrefetch(const PrefetchInfo &pfi,
-    std::vector<AddrPriority> &addresses)
+    std::vector<AddrPriority> &addresses,
+    const CacheAccessor &cache)
 {
     // This prefetcher requires a PC
     if (!pfi.hasPC()) {
@@ -81,8 +86,8 @@ IndirectMemory::calculatePrefetch(const PrefetchInfo &pfi,
         }
     } else {
         // if misses are not being tracked, attempt to detect stream accesses
-        PrefetchTableEntry *pt_entry =
-            prefetchTable.findEntry(pc, false /* unused */);
+        const PrefetchTableEntry::KeyType key{pc, is_secure};
+        PrefetchTableEntry *pt_entry = prefetchTable.findEntry(key);
         if (pt_entry != nullptr) {
             prefetchTable.accessEntry(pt_entry);
 
@@ -154,9 +159,9 @@ IndirectMemory::calculatePrefetch(const PrefetchInfo &pfi,
                 }
             }
         } else {
-            pt_entry = prefetchTable.findVictim(pc);
+            pt_entry = prefetchTable.findVictim(key);
             assert(pt_entry != nullptr);
-            prefetchTable.insertEntry(pc, false /* unused */, pt_entry);
+            prefetchTable.insertEntry(key, pt_entry);
             pt_entry->address = addr;
             pt_entry->secure = is_secure;
         }
@@ -169,8 +174,8 @@ IndirectMemory::allocateOrUpdateIPDEntry(
 {
     // The address of the pt_entry is used to index the IPD
     Addr ipd_entry_addr = (Addr) pt_entry;
-    IndirectPatternDetectorEntry *ipd_entry = ipd.findEntry(ipd_entry_addr,
-                                                            false/* unused */);
+    const IndirectPatternDetectorEntry::KeyType key{ipd_entry_addr, false};
+    IndirectPatternDetectorEntry *ipd_entry = ipd.findEntry(key);
     if (ipd_entry != nullptr) {
         ipd.accessEntry(ipd_entry);
         if (!ipd_entry->secondIndexSet) {
@@ -185,9 +190,9 @@ IndirectMemory::allocateOrUpdateIPDEntry(
             ipdEntryTrackingMisses = nullptr;
         }
     } else {
-        ipd_entry = ipd.findVictim(ipd_entry_addr);
+        ipd_entry = ipd.findVictim(key);
         assert(ipd_entry != nullptr);
-        ipd.insertEntry(ipd_entry_addr, false /* unused */, ipd_entry);
+        ipd.insertEntry(key, ipd_entry);
         ipd_entry->idx1 = index;
         ipdEntryTrackingMisses = ipd_entry;
     }

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Copyright (c) 2017 Jason Lowe-Power
 # All rights reserved.
 #
@@ -25,7 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-""" This file creates a barebones system and executes 'hello', a simple Hello
+"""This file creates a barebones system and executes 'hello', a simple Hello
 World application. Adds a simple memobj between the CPU and the membus.
 
 This config file assumes that the x86 ISA was built.
@@ -47,7 +46,7 @@ system.clk_domain.voltage_domain = VoltageDomain()
 
 # Set up the system
 system.mem_mode = "timing"  # Use timing accesses
-system.mem_ranges = [AddrRange("512MB")]  # Create an address range
+system.mem_ranges = [AddrRange("512MiB")]  # Create an address range
 
 # Create a simple CPU
 system.cpu = X86TimingSimpleCPU()
@@ -101,6 +100,6 @@ root = Root(full_system=False, system=system)
 # instantiate all of the objects we've created above
 m5.instantiate()
 
-print("Beginning simulation!")
+print(f"Beginning simulation!")
 exit_event = m5.simulate()
-print("Exiting @ tick %i because %s" % (m5.curTick(), exit_event.getCause()))
+print(f"Exiting @ tick {m5.curTick()} because {exit_event.getCause()}")

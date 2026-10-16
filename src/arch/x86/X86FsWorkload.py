@@ -33,13 +33,21 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.params import *
-
-from m5.objects.E820 import X86E820Table, X86E820Entry
-from m5.objects.SMBios import X86SMBiosSMBiosTable
-from m5.objects.IntelMP import X86IntelMPFloatingPointer, X86IntelMPConfigTable
 from m5.objects.ACPI import X86ACPIRSDP
-from m5.objects.Workload import KernelWorkload, Workload
+from m5.objects.E820 import (
+    X86E820Entry,
+    X86E820Table,
+)
+from m5.objects.IntelMP import (
+    X86IntelMPConfigTable,
+    X86IntelMPFloatingPointer,
+)
+from m5.objects.SMBios import X86SMBiosSMBiosTable
+from m5.objects.Workload import (
+    KernelWorkload,
+    Workload,
+)
+from m5.params import *
 
 
 class X86BareMetalWorkload(Workload):
@@ -65,6 +73,13 @@ class X86FsWorkload(KernelWorkload):
     acpi_description_table_pointer = Param.X86ACPIRSDP(
         X86ACPIRSDP(), "ACPI root description pointer structure"
     )
+    enable_osxsave = Param.Bool(False, "Enable OSXSAVE in CR4 register")
+    exit_on_kernel_panic = Param.Bool(
+        True, "Generate gem5 panic upon the guest's kernel panic."
+    )
+    exit_on_kernel_oops = Param.Bool(
+        False, "Generate gem5 panic upon the guest's kernel oops."
+    )
 
 
 class X86FsLinux(X86FsWorkload):
@@ -74,4 +89,23 @@ class X86FsLinux(X86FsWorkload):
 
     e820_table = Param.X86E820Table(
         X86E820Table(), "E820 map of physical memory"
+    )
+    exit_on_kernel_panic = Param.Bool(
+        True, "Generate gem5 panic upon the guest's kernel panic."
+    )
+    exit_on_kernel_oops = Param.Bool(
+        False, "Generate gem5 panic upon the guest's kernel oops."
+    )
+    # Note: Taken from the RISC-V implementation, which obtained the following
+    # from KernelWorkload
+    on_panic = Param.KernelPanicOopsBehaviour(
+        "DumpDmesgAndExit",
+        "Define how gem5 should behave after a Linux Kernel Panic. "
+        "Handler might not be implemented for all architectures.",
+    )
+
+    on_oops = Param.KernelPanicOopsBehaviour(
+        "DumpDmesgAndExit",
+        "Define how gem5 should behave after a Linux Kernel Oops. "
+        "Handler might not be implemented for all architectures.",
     )

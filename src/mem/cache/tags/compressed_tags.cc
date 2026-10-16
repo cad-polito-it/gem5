@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2023-2024 ARM Limited
+ * All rights reserved.
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2018 Inria
  * All rights reserved.
  *
@@ -38,6 +50,7 @@
 #include "mem/cache/replacement_policies/base.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
 #include "mem/cache/tags/indexing_policies/base.hh"
+#include "mem/cache/tags/partitioning_policies/partition_manager.hh"
 #include "mem/packet.hh"
 #include "params/CompressedTags.hh"
 
@@ -102,23 +115,29 @@ CompressedTags::tagsInit()
 }
 
 CacheBlk*
-CompressedTags::findVictim(Addr addr, const bool is_secure,
+CompressedTags::findVictim(const CacheBlk::KeyType& key,
                            const std::size_t compressed_size,
-                           std::vector<CacheBlk*>& evict_blks)
+                           std::vector<CacheBlk*>& evict_blks,
+                           const uint64_t partition_id=0)
 {
     // Get all possible locations of this superblock
-    const std::vector<ReplaceableEntry*> superblock_entries =
-        indexingPolicy->getPossibleEntries(addr);
+    std::vector<ReplaceableEntry*> superblock_entries =
+        indexingPolicy->getPossibleEntries(key);
+
+    // Filter entries based on PartitionID
+    if (partitionManager){
+        partitionManager->filterByPartition(superblock_entries,
+            partition_id);
+    }
 
     // Check if the superblock this address belongs to has been allocated. If
     // so, try co-allocating
-    Addr tag = extractTag(addr);
     SuperBlk* victim_superblock = nullptr;
     bool is_co_allocation = false;
-    const uint64_t offset = extractSectorOffset(addr);
+    const uint64_t offset = extractSectorOffset(key.address);
     for (const auto& entry : superblock_entries){
         SuperBlk* superblock = static_cast<SuperBlk*>(entry);
-        if (superblock->matchTag(tag, is_secure) &&
+        if (superblock->match(key) &&
             !superblock->blks[offset]->isValid() &&
             superblock->isCompressed() &&
             superblock->canCoAllocate(compressed_size))
@@ -132,6 +151,13 @@ CompressedTags::findVictim(Addr addr, const bool is_secure,
     // If the superblock is not present or cannot be co-allocated a
     // superblock must be replaced
     if (victim_superblock == nullptr){
+        // check if partitioning policy limited allocation and if true - return
+        // this assumes that superblock_entries would not be empty if
+        // partitioning policy is not in place
+        if (superblock_entries.size() == 0){
+            return nullptr;
+        }
+
         // Choose replacement victim from replacement candidates
         victim_superblock = static_cast<SuperBlk*>(
             replacementPolicy->getVictim(superblock_entries));
@@ -161,14 +187,6 @@ CompressedTags::findVictim(Addr addr, const bool is_secure,
     sectorStats.evictionsReplacement[evict_blks.size()]++;
 
     return victim;
-}
-
-void
-CompressedTags::forEachBlk(std::function<void(CacheBlk &)> visitor)
-{
-    for (CompressionBlk& blk : blks) {
-        visitor(blk);
-    }
 }
 
 bool

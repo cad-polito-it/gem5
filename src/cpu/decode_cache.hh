@@ -33,12 +33,12 @@
 
 #include "base/bitfield.hh"
 #include "base/compiler.hh"
+#include "base/types.hh"
 #include "cpu/static_inst_fwd.hh"
 
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(DecodeCache, decode_cache);
 namespace decode_cache
 {
 

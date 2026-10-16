@@ -36,6 +36,7 @@
 
 #include "cpu/testers/gpu_ruby_test/protocol_tester.hh"
 #include "cpu/testers/gpu_ruby_test/tester_thread.hh"
+#include "debug/EpisodeCount.hh"
 
 namespace gem5
 {
@@ -62,7 +63,7 @@ Episode::Episode(ProtocolTester* _tester, TesterThread* _thread, int num_loads,
     initActions();
     isActive = true;
 
-    DPRINTFN("Episode %d\n", episodeId);
+    DPRINTF(EpisodeCount,"Episode %d\n", episodeId);
 }
 
 Episode::~Episode()
@@ -100,7 +101,7 @@ Episode::initActions()
     int num_loads = numLoads;
     int num_stores = numStores;
     while ((num_loads + num_stores) > 0) {
-        switch (random() % 2) {
+        switch (rng->random<unsigned int>() % 2) {
             case 0: // Load
                 if (num_loads > 0) {
                     actions.push_back(new Action(Action::Type::LOAD,

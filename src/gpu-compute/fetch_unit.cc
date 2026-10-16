@@ -75,6 +75,7 @@ FetchUnit::init()
         fetchStatusQueue[i] = std::make_pair(wf, false);
         fetchBuf[i].allocateBuf(fetchDepth, computeUnit.cacheLineSize(), wf);
         fetchBuf[i].decoder(&decoder);
+        decoder.setGfxVersion(computeUnit.shader->getGfxVersion());
     }
 
     fetchScheduler.bindList(&fetchQueue);
@@ -320,7 +321,7 @@ FetchUnit::processFetchReturn(PacketPtr pkt)
         assert(!fetchBuf.at(wavefront->wfSlotId).hasFetchDataToProcess());
         wavefront->dropFetch = false;
     } else {
-        fetchBuf.at(wavefront->wfSlotId).fetchDone(pkt->req->getVaddr());
+        fetchBuf.at(wavefront->wfSlotId).fetchDone(pkt);
     }
 
     wavefront->pendingFetch = false;
@@ -469,8 +470,23 @@ FetchUnit::FetchBufDesc::reserveBuf(Addr vaddr)
 }
 
 void
-FetchUnit::FetchBufDesc::fetchDone(Addr vaddr)
+FetchUnit::FetchBufDesc::fetchDone(PacketPtr pkt)
 {
+    // If the return command is MemSyncResp, then it belongs to
+    // an SQC invalidation request. This request calls
+    // incLGKMInstsIssued() function in its execution path.
+    // Since there is no valid memory return response associated with
+    // this instruction, decLGKMInstsIssued() is not executed. Do this
+    // here to decrement the counter and invalidate all buffers
+    if (pkt->cmd == MemCmd::MemSyncResp) {
+        wavefront->decLGKMInstsIssued();
+        flushBuf();
+        restartFromBranch = false;
+        return;
+    }
+
+    Addr vaddr = pkt->req->getVaddr();
+
     assert(bufferedPCs.find(vaddr) == bufferedPCs.end());
     DPRINTF(GPUFetch, "WF[%d][%d]: Id%d done fetching for addr %#x\n",
             wavefront->simdId, wavefront->wfSlotId,
@@ -523,7 +539,7 @@ FetchUnit::FetchBufDesc::checkWaveReleaseBuf()
             wavefront->wfSlotId, wavefront->wfDynId, cur_wave_pc,
             wavefront->pc());
 
-#ifdef DEBUG
+#ifdef GEM5_DEBUG
     int idx = 0;
     for (const auto &buf_pc : bufferedPCs) {
         DPRINTF(GPUFetch, "PC[%d] = %#x\n", idx, buf_pc.first);

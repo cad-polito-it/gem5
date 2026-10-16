@@ -45,7 +45,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Sinic, sinic);
 namespace sinic
 {
 
@@ -267,8 +266,8 @@ class Device : public Base
  * Memory Interface
  */
   public:
-    Tick read(PacketPtr pkt) override;
-    Tick write(PacketPtr pkt) override;
+    Tick readDevice(PacketPtr pkt) override;
+    Tick writeDevice(PacketPtr pkt) override;
     virtual void drainResume() override;
 
     void prepareIO(ContextID cpu, int index);

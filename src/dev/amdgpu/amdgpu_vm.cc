@@ -37,6 +37,7 @@
 #include "base/trace.hh"
 #include "debug/AMDGPUDevice.hh"
 #include "dev/amdgpu/amdgpu_defines.hh"
+#include "dev/amdgpu/amdgpu_device.hh"
 #include "mem/packet_access.hh"
 
 namespace gem5
@@ -51,6 +52,35 @@ AMDGPUVM::AMDGPUVM()
     for (int i = 0; i < AMDGPU_VM_COUNT; ++i) {
         memset(&vmContexts[0], 0, sizeof(AMDGPUVMContext));
     }
+
+    for (int i = 0; i < NUM_MMIO_RANGES; ++i) {
+        mmioRanges[i] = AddrRange();
+    }
+}
+
+void
+AMDGPUVM::setMMIOAperture(mmio_range_t mmio_aperture, AddrRange range)
+{
+    mmioRanges[mmio_aperture] = range;
+}
+
+AddrRange
+AMDGPUVM::getMMIORange(mmio_range_t mmio_aperture)
+{
+    return mmioRanges[mmio_aperture];
+}
+
+const AddrRange&
+AMDGPUVM::getMMIOAperture(Addr offset)
+{
+    for (int i = 0; i < NUM_MMIO_RANGES; ++i) {
+        if (mmioRanges[i].contains(offset)) {
+            return mmioRanges[i];
+        }
+    }
+
+    // Default to NBIO
+    return mmioRanges[NBIO_MMIO_RANGE];
 }
 
 Addr
@@ -92,6 +122,7 @@ AMDGPUVM::readMMIO(PacketPtr pkt, Addr offset)
         break;
       // GRBM MMIOs
       case mmVM_INVALIDATE_ENG17_ACK:
+      case MI300X_VM_INVALIDATE_ENG17_ACK:
         DPRINTF(AMDGPUDevice, "Overwritting invalidation ENG17 ACK\n");
         pkt->setLE<uint32_t>(1);
         break;
@@ -102,7 +133,7 @@ AMDGPUVM::readMMIO(PacketPtr pkt, Addr offset)
 }
 
 void
-AMDGPUVM::writeMMIO(PacketPtr pkt, Addr offset)
+AMDGPUVM::writeMMIOGfx900(PacketPtr pkt, Addr offset)
 {
     switch (offset) {
       // VMID0 MMIOs
@@ -164,6 +195,83 @@ AMDGPUVM::writeMMIO(PacketPtr pkt, Addr offset)
 }
 
 void
+AMDGPUVM::writeMMIOGfx940(PacketPtr pkt, Addr offset)
+{
+    switch (offset) {
+      // VMID0 MMIOs
+      case MI300X_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32:
+        vmContext0.ptBaseL = pkt->getLE<uint32_t>();
+        // Clear extra bits not part of address
+        vmContext0.ptBaseL = insertBits(vmContext0.ptBaseL, 0, 0, 0);
+        break;
+      case MI300X_CONTEXT0_PAGE_TABLE_BASE_ADDR_HI32:
+        vmContext0.ptBaseH = pkt->getLE<uint32_t>();
+        break;
+      case MI300X_CONTEXT0_PAGE_TABLE_START_ADDR_LO32:
+        vmContext0.ptStartL = pkt->getLE<uint32_t>();
+        break;
+      case MI300X_CONTEXT0_PAGE_TABLE_START_ADDR_HI32:
+        vmContext0.ptStartH = pkt->getLE<uint32_t>();
+        break;
+      case MI300X_CONTEXT0_PAGE_TABLE_END_ADDR_LO32:
+        vmContext0.ptEndL = pkt->getLE<uint32_t>();
+        break;
+      case MI300X_CONTEXT0_PAGE_TABLE_END_ADDR_HI32:
+        vmContext0.ptEndH = pkt->getLE<uint32_t>();
+        break;
+      case MI300X_VM_AGP_TOP: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.agpTop = (((Addr)bits(val, 23, 0)) << 24) | 0xffffff;
+        } break;
+      case MI300X_VM_AGP_BOT: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.agpBot = ((Addr)bits(val, 23, 0)) << 24;
+        } break;
+      case MI300X_VM_AGP_BASE: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.agpBase = ((Addr)bits(val, 23, 0)) << 24;
+        } break;
+      case MI300X_VM_FB_LOCATION_TOP: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.fbTop = (((Addr)bits(val, 23, 0)) << 24) | 0xffffff;
+        } break;
+      case MI300X_VM_FB_LOCATION_BASE: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.fbBase = ((Addr)bits(val, 23, 0)) << 24;
+        } break;
+      case MI300X_VM_FB_OFFSET: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.fbOffset = ((Addr)bits(val, 23, 0)) << 24;
+        } break;
+      case MI300X_VM_SYSTEM_APERTURE_LOW_ADDR: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.sysAddrL = ((Addr)bits(val, 29, 0)) << 18;
+        } break;
+      case MI300X_VM_SYSTEM_APERTURE_HIGH_ADDR: {
+        uint32_t val = pkt->getLE<uint32_t>();
+        vmContext0.sysAddrH = ((Addr)bits(val, 29, 0)) << 18;
+        } break;
+      default:
+        break;
+    }
+}
+
+void
+AMDGPUVM::writeMMIO(PacketPtr pkt, Addr offset)
+{
+    // There are multiple functions due to MMIO addresses being aliased to
+    // something different from a previous GFX version. So far this has not
+    // been the case for supported MMIO reads but requires special handling
+    // for newer gfx942 and gfx950 devices.
+    if (gpuDevice->getGfxVersion() == GfxVersion::gfx942 ||
+        gpuDevice->getGfxVersion() == GfxVersion::gfx950) {
+        writeMMIOGfx940(pkt, offset);
+    } else {
+        writeMMIOGfx900(pkt, offset);
+    }
+}
+
+void
 AMDGPUVM::registerTLB(VegaISA::GpuTLB *tlb)
 {
     DPRINTF(AMDGPUDevice, "Registered a TLB with device\n");
@@ -186,6 +294,7 @@ AMDGPUVM::serialize(CheckpointOut &cp) const
     Addr vm0PTBase = vmContext0.ptBase;
     Addr vm0PTStart = vmContext0.ptStart;
     Addr vm0PTEnd = vmContext0.ptEnd;
+    uint64_t gartTableSize;
     SERIALIZE_SCALAR(vm0PTBase);
     SERIALIZE_SCALAR(vm0PTStart);
     SERIALIZE_SCALAR(vm0PTEnd);
@@ -213,6 +322,21 @@ AMDGPUVM::serialize(CheckpointOut &cp) const
     SERIALIZE_ARRAY(ptBase, AMDGPU_VM_COUNT);
     SERIALIZE_ARRAY(ptStart, AMDGPU_VM_COUNT);
     SERIALIZE_ARRAY(ptEnd, AMDGPU_VM_COUNT);
+
+    gartTableSize = gartTable.size();
+    uint64_t* gartTableKey = new uint64_t[gartTableSize];
+    uint64_t* gartTableValue = new uint64_t[gartTableSize];
+    SERIALIZE_SCALAR(gartTableSize);
+    int i = 0;
+    for (auto it = gartTable.begin(); it != gartTable.end(); ++it) {
+        gartTableKey[i] = it->first;
+        gartTableValue[i] = it->second;
+        i++;
+    }
+    SERIALIZE_ARRAY(gartTableKey, gartTableSize);
+    SERIALIZE_ARRAY(gartTableValue, gartTableSize);
+    delete[] gartTableKey;
+    delete[] gartTableValue;
 }
 
 void
@@ -222,6 +346,7 @@ AMDGPUVM::unserialize(CheckpointIn &cp)
     Addr vm0PTBase;
     Addr vm0PTStart;
     Addr vm0PTEnd;
+    uint64_t gartTableSize, *gartTableKey, *gartTableValue;
     UNSERIALIZE_SCALAR(vm0PTBase);
     UNSERIALIZE_SCALAR(vm0PTStart);
     UNSERIALIZE_SCALAR(vm0PTEnd);
@@ -252,6 +377,16 @@ AMDGPUVM::unserialize(CheckpointIn &cp)
         vmContexts[i].ptStart = ptStart[i];
         vmContexts[i].ptEnd = ptEnd[i];
     }
+    UNSERIALIZE_SCALAR(gartTableSize);
+    gartTableKey = new uint64_t[gartTableSize];
+    gartTableValue = new uint64_t[gartTableSize];
+    UNSERIALIZE_ARRAY(gartTableKey, gartTableSize);
+    UNSERIALIZE_ARRAY(gartTableValue, gartTableSize);
+    for (uint64_t i = 0; i < gartTableSize; i++) {
+        gartTable[gartTableKey[i]] = gartTableValue[i];
+    }
+    delete[] gartTableKey;
+    delete[] gartTableValue;
 }
 
 void

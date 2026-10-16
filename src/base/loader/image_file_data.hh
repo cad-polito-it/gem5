@@ -38,7 +38,6 @@
 namespace gem5
 {
 
-GEM5_DEPRECATED_NAMESPACE(Loader, loader);
 namespace loader
 {
 
@@ -54,7 +53,7 @@ class ImageFileData
     uint8_t const *data() const { return _data; }
     size_t len() const { return _len; }
 
-    ImageFileData(const std::string &f_name);
+    ImageFileData(const std::string &f_name, bool try_decompress = true);
     virtual ~ImageFileData();
 };
 

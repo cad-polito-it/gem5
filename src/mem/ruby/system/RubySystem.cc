@@ -66,15 +66,8 @@ namespace gem5
 namespace ruby
 {
 
-bool RubySystem::m_randomization;
-uint32_t RubySystem::m_block_size_bytes;
-uint32_t RubySystem::m_block_size_bits;
-uint32_t RubySystem::m_memory_size_bits;
-bool RubySystem::m_warmup_enabled = false;
 // To look forward to allowing multiple RubySystem instances, track the number
 // of RubySystems that need to be warmed up on checkpoint restore.
-unsigned RubySystem::m_systems_to_warmup = 0;
-bool RubySystem::m_cooldown_enabled = false;
 
 RubySystem::RubySystem(const Params &p)
     : ClockedObject(p), m_access_backing_store(p.access_backing_store),
@@ -104,12 +97,23 @@ RubySystem::registerNetwork(Network* network_ptr)
 }
 
 void
-RubySystem::registerAbstractController(AbstractController* cntrl)
+RubySystem::registerAbstractController(
+    AbstractController* cntrl, std::unique_ptr<ProtocolInfo> cntl_protocol)
 {
     m_abs_cntrl_vec.push_back(cntrl);
 
     MachineID id = cntrl->getMachineID();
     m_abstract_controls[id.getType()][id.getNum()] = cntrl;
+
+    if (!protocolInfo) {
+        protocolInfo = std::move(cntl_protocol);
+    } else {
+        fatal_if(
+            protocolInfo->getName() != cntl_protocol->getName(),
+            "All controllers in a system must use the same protocol. %s != %s",
+            protocolInfo->getName().c_str(), cntl_protocol->getName().c_str()
+        );
+    }
 }
 
 void
@@ -177,22 +181,32 @@ RubySystem::makeCacheRecorder(uint8_t *uncompressed_trace,
                               uint64_t cache_trace_size,
                               uint64_t block_size_bytes)
 {
-    std::vector<Sequencer*> sequencer_map;
-    Sequencer* sequencer_ptr = NULL;
+    std::vector<RubyPort*> ruby_port_map;
+    RubyPort* ruby_port_ptr = NULL;
 
     for (int cntrl = 0; cntrl < m_abs_cntrl_vec.size(); cntrl++) {
-        sequencer_map.push_back(m_abs_cntrl_vec[cntrl]->getCPUSequencer());
-        if (sequencer_ptr == NULL) {
-            sequencer_ptr = sequencer_map[cntrl];
+        if (m_abs_cntrl_vec[cntrl]->getGPUCoalescer() != NULL) {
+            ruby_port_map.push_back(
+                    (RubyPort*)m_abs_cntrl_vec[cntrl]->getGPUCoalescer());
+        } else {
+            ruby_port_map.push_back(
+                    (RubyPort*)m_abs_cntrl_vec[cntrl]->getCPUSequencer());
+        }
+
+        if (ruby_port_ptr == NULL) {
+            ruby_port_ptr = ruby_port_map[cntrl];
         }
     }
 
-    assert(sequencer_ptr != NULL);
+    assert(ruby_port_ptr != NULL);
 
     for (int cntrl = 0; cntrl < m_abs_cntrl_vec.size(); cntrl++) {
-        if (sequencer_map[cntrl] == NULL) {
-            sequencer_map[cntrl] = sequencer_ptr;
+        if (ruby_port_map[cntrl] == NULL) {
+            ruby_port_map[cntrl] = ruby_port_ptr;
+        } else {
+            ruby_port_ptr = ruby_port_map[cntrl];
         }
+
     }
 
     // Remove the old CacheRecorder if it's still hanging about.
@@ -202,7 +216,8 @@ RubySystem::makeCacheRecorder(uint8_t *uncompressed_trace,
 
     // Create the CacheRecorder and record the cache trace
     m_cache_recorder = new CacheRecorder(uncompressed_trace, cache_trace_size,
-                                         sequencer_map, block_size_bytes);
+                                         ruby_port_map, block_size_bytes,
+                                         m_block_size_bytes);
 }
 
 void
@@ -217,6 +232,13 @@ RubySystem::memWriteback()
         m_abs_cntrl_vec[cntrl]->recordCacheTrace(cntrl, m_cache_recorder);
     }
     DPRINTF(RubyCacheTrace, "Cache Trace Complete\n");
+
+    // If there is no dirty block, we don't need to flush the cache
+    if (m_cache_recorder->getNumRecords() == 0)
+    {
+        m_cooldown_enabled = false;
+        return;
+    }
 
     // save the current tick value
     Tick curtick_original = curTick();
@@ -310,23 +332,24 @@ RubySystem::writeCompressedTrace(uint8_t *raw_data, std::string filename,
 void
 RubySystem::serialize(CheckpointOut &cp) const
 {
-    // Store the cache-block size, so we are able to restore on systems with a
-    // different cache-block size. CacheRecorder depends on the correct
-    // cache-block size upon unserializing.
-    uint64_t block_size_bytes = getBlockSizeBytes();
+    // Store the cache-block size, so we are able to restore on systems
+    // with a different cache-block size. CacheRecorder depends on the
+    // correct cache-block size upon unserializing.
+    uint64_t block_size_bytes = m_block_size_bytes;
     SERIALIZE_SCALAR(block_size_bytes);
 
-    // Check that there's a valid trace to use.  If not, then memory won't be
-    // up-to-date and the simulation will probably fail when restoring from the
-    // checkpoint.
+    // Check that there's a valid trace to use.  If not, then memory won't
+    // be up-to-date and the simulation will probably fail when restoring
+    // from the checkpoint.
     if (m_cache_recorder == NULL) {
-        fatal("Call memWriteback() before serialize() to create ruby trace");
+        fatal("Call memWriteback() before serialize() to create"
+                "ruby trace");
     }
 
     // Aggregate the trace entries together into a single array
     uint8_t *raw_data = new uint8_t[4096];
-    uint64_t cache_trace_size = m_cache_recorder->aggregateRecords(&raw_data,
-                                                                 4096);
+    uint64_t cache_trace_size = m_cache_recorder->aggregateRecords(
+                                                        &raw_data, 4096);
     std::string cache_trace_file = name() + ".cache.gz";
     writeCompressedTrace(raw_data, cache_trace_file, cache_trace_size);
 
@@ -397,7 +420,6 @@ RubySystem::unserialize(CheckpointIn &cp)
     readCompressedTrace(cache_trace_file, uncompressed_trace,
                         cache_trace_size);
     m_warmup_enabled = true;
-    m_systems_to_warmup++;
 
     // Create the cache recorder that will hang around until startup.
     makeCacheRecorder(uncompressed_trace, cache_trace_size, block_size_bytes);
@@ -435,6 +457,9 @@ RubySystem::startup()
         Tick curtick_original = curTick();
         // save the event queue head
         Event* eventq_head = eventq->replaceHead(NULL);
+        // save the exit event pointer
+        GlobalSimLoopExitEvent *original_simulate_limit_event = nullptr;
+        original_simulate_limit_event = simulate_limit_event;
         // set curTick to 0 and reset Ruby System's clock
         setCurTick(0);
         resetClock();
@@ -445,13 +470,12 @@ RubySystem::startup()
 
         delete m_cache_recorder;
         m_cache_recorder = NULL;
-        m_systems_to_warmup--;
-        if (m_systems_to_warmup == 0) {
-            m_warmup_enabled = false;
-        }
+        m_warmup_enabled = false;
 
         // Restore eventq head
         eventq->replaceHead(eventq_head);
+        // Restore exit event pointer
+        simulate_limit_event = original_simulate_limit_event;
         // Restore curTick and Ruby System's clock
         setCurTick(curtick_original);
         resetClock();
@@ -480,12 +504,20 @@ RubySystem::resetStats()
     ClockedObject::resetStats();
 }
 
-#ifndef PARTIAL_FUNC_READS
 bool
-RubySystem::functionalRead(PacketPtr pkt)
+RubySystem::functionalRead(PacketPtr pkt) {
+    if (protocolInfo->getPartialFuncReads()) {
+        return partialFunctionalRead(pkt);
+    } else {
+        return simpleFunctionalRead(pkt);
+    }
+}
+
+bool
+RubySystem::simpleFunctionalRead(PacketPtr pkt)
 {
     Addr address(pkt->getAddr());
-    Addr line_address = makeLineAddress(address);
+    Addr line_address = makeLineAddress(address, m_block_size_bits);
 
     AccessPermission access_perm = AccessPermission_NotPresent;
 
@@ -505,6 +537,7 @@ RubySystem::functionalRead(PacketPtr pkt)
 
     AbstractController *ctrl_ro = nullptr;
     AbstractController *ctrl_rw = nullptr;
+    AbstractController *ctrl_ms = nullptr;
     AbstractController *ctrl_backing_store = nullptr;
 
     // In this loop we count the number of controllers that have the given
@@ -521,9 +554,25 @@ RubySystem::functionalRead(PacketPtr pkt)
         }
         else if (access_perm == AccessPermission_Busy)
             num_busy++;
-        else if (access_perm == AccessPermission_Maybe_Stale)
+        else if (access_perm == AccessPermission_Maybe_Stale) {
+            int priority = cntrl->functionalReadPriority();
+            if (priority >= 0) {
+                if (ctrl_ms == nullptr) {
+                    ctrl_ms = cntrl;
+                } else {
+                    int current_priority = ctrl_ms->functionalReadPriority();
+                    if (ctrl_ms == nullptr || priority < current_priority) {
+                        ctrl_ms = cntrl;
+                    } else if (priority == current_priority) {
+                        warn("More than one Abstract Controller with "
+                             "Maybe_Stale permission and same priority (%d) "
+                             "for addr: %#x on cacheline: %#x.", priority,
+                             address, line_address);
+                    }
+                }
+            }
             num_maybe_stale++;
-        else if (access_perm == AccessPermission_Backing_Store) {
+        } else if (access_perm == AccessPermission_Backing_Store) {
             // See RubySlicc_Exports.sm for details, but Backing_Store is meant
             // to represent blocks in memory *for Broadcast/Snooping protocols*,
             // where memory has no idea whether it has an exclusive copy of data
@@ -547,7 +596,8 @@ RubySystem::functionalRead(PacketPtr pkt)
     // it only if it's not in the cache hierarchy at all.
     int num_controllers = netCntrls[request_net_id].size();
     if (num_invalid == (num_controllers - 1) && num_backing_store == 1) {
-        DPRINTF(RubySystem, "only copy in Backing_Store memory, read from it\n");
+        DPRINTF(RubySystem,
+                "only copy in Backing_Store memory, read from it\n");
         ctrl_backing_store->functionalRead(line_address, pkt);
         return true;
     } else if (num_ro > 0 || num_rw >= 1) {
@@ -592,16 +642,23 @@ RubySystem::functionalRead(PacketPtr pkt)
             if (network->functionalRead(pkt))
                 return true;
         }
+        if (ctrl_ms != nullptr) {
+            // No copy in transit or buffered indicates that a block marked
+            // as Maybe_Stale is actually up-to-date, just waiting an Ack or
+            // similar type of message which carries no data.
+            ctrl_ms->functionalRead(line_address, pkt);
+            return true;
+        }
     }
 
     return false;
 }
-#else
+
 bool
-RubySystem::functionalRead(PacketPtr pkt)
+RubySystem::partialFunctionalRead(PacketPtr pkt)
 {
     Addr address(pkt->getAddr());
-    Addr line_address = makeLineAddress(address);
+    Addr line_address = makeLineAddress(address, m_block_size_bits);
 
     DPRINTF(RubySystem, "Functional Read request for %#x\n", address);
 
@@ -647,6 +704,7 @@ RubySystem::functionalRead(PacketPtr pkt)
     // Issue functional reads to all controllers found in a stable state
     // until we get a full copy of the line
     WriteMask bytes;
+    bytes.setBlockSize(getBlockSizeBytes());
     if (ctrl_rw != nullptr) {
         ctrl_rw->functionalRead(line_address, pkt, bytes);
         // if a RW controllter has the full line that's all uptodate
@@ -692,7 +750,6 @@ RubySystem::functionalRead(PacketPtr pkt)
 
     return bytes.isFull();
 }
-#endif
 
 // The function searches through all the buffers that exist in different
 // cache, directory and memory controllers, and in the network components
@@ -702,7 +759,7 @@ bool
 RubySystem::functionalWrite(PacketPtr pkt)
 {
     Addr addr(pkt->getAddr());
-    Addr line_addr = makeLineAddress(addr);
+    Addr line_addr = makeLineAddress(addr, m_block_size_bits);
     AccessPermission access_perm = AccessPermission_NotPresent;
 
     DPRINTF(RubySystem, "Functional Write request for %#x\n", addr);

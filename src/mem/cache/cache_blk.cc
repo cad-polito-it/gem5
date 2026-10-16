@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2013 ARM Limited
+ * Copyright (c) 2012-2013, 2023-2024 ARM Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -47,19 +47,23 @@ namespace gem5
 {
 
 void
-CacheBlk::insert(const Addr tag, const bool is_secure,
-                 const int src_requestor_ID, const uint32_t task_ID)
+CacheBlk::insert(const KeyType &tag,
+                 const int src_requestor_ID, const uint32_t task_ID,
+                 const uint64_t partition_id)
 {
     // Make sure that the block has been properly invalidated
     assert(!isValid());
 
-    insert(tag, is_secure);
+    insert(tag);
 
     // Set source requestor ID
     setSrcRequestorId(src_requestor_ID);
 
     // Set task ID
     setTaskId(task_ID);
+
+    // Set partition ID
+    setPartitionId(partition_id);
 
     // Set insertion tick as current tick
     setTickInserted();

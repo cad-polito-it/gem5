@@ -66,7 +66,7 @@ class RemoteGDB : public BaseRemoteGDB
             uint32_t csr;
         } r;
       public:
-        char *data() const { return (char *)&r; }
+        char *data() { return (char *)&r; }
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
@@ -93,7 +93,7 @@ class RemoteGDB : public BaseRemoteGDB
             uint64_t y;
         } r;
       public:
-        char *data() const { return (char *)&r; }
+        char *data() { return (char *)&r; }
         size_t size() const { return sizeof(r); }
         void getRegs(ThreadContext*);
         void setRegs(ThreadContext*) const;
@@ -108,7 +108,7 @@ class RemoteGDB : public BaseRemoteGDB
     SPARC64GdbRegCache regCache64;
 
   public:
-    RemoteGDB(System *_system, int _port);
+    RemoteGDB(System *_system, ListenSocketConfig _listen_config);
     BaseGdbRegCache *gdbRegs();
 };
 } // namespace SparcISA

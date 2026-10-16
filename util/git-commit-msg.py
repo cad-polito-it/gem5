@@ -32,8 +32,8 @@
 import os
 import re
 import sys
-from maint.lib import maintainers
 
+from maint.lib import maintainers
 from style.repo import GitRepo
 
 
@@ -57,7 +57,7 @@ def _printErrorQuit(error_message):
 --------------------------------------------------------------------------
     """
     )
-    print(open(sys.argv[1], "r").read())
+    print(open(sys.argv[1]).read())
     print(
         """
 --------------------------------------------------------------------------
@@ -100,13 +100,12 @@ def _validateTags(commit_header):
     maintainer_dict = maintainers.Maintainers.from_file()
     valid_tags = [tag for tag, _ in maintainer_dict]
 
-    # Remove non-tag 'pmc' and add special tags not in MAINTAINERS.yaml
-    valid_tags.remove("pmc")
+    # Add special tags not in MAINTAINERS.yaml
     valid_tags.extend(["RFC", "WIP"])
 
     tags = "".join(commit_header.split(":")[0].split()).split(",")
     if any(tag not in valid_tags for tag in tags):
-        invalid_tag = next((tag for tag in tags if tag not in valid_tags))
+        invalid_tag = next(tag for tag in tags if tag not in valid_tags)
         _printErrorQuit("Invalid Gem5 tag: " + invalid_tag)
 
 
@@ -118,10 +117,15 @@ commit_message = open(sys.argv[1]).read()
 
 # The first line of a commit must contain at least one valid gem5 tag, and
 # a commit title
-commit_message_lines = commit_message.splitlines()
+commit_message_lines = []
+for line in commit_message.splitlines():
+    if line.lstrip().startswith("#"):
+        # We don't care about any comment lines (lines starting with #).
+        continue
+    commit_message_lines.append(line)
 commit_header = commit_message_lines[0]
 commit_header_match = re.search(
-    "^(fixup! )?(\S[\w\-][,\s*[\w\-]+]*:.+\S$)", commit_header
+    r"^(fixup! )?(\S[\w\-][,\s*[\w\-]+]*:.+\S$)", commit_header
 )
 if commit_header_match is None:
     _printErrorQuit("Invalid commit header")
@@ -143,18 +147,20 @@ if len(commit_header) > max_header_size:
         + ")"
     )
 
-# Then there must be at least one empty line between the commit header and
-# the commit description
-if commit_message_lines[1] != "":
-    _printErrorQuit(
-        "Please add an empty line between the commit title and "
-        "its description"
-    )
+if len(commit_message_lines) > 1:
+    # Then there must be at least one empty line between the commit header and
+    # the commit description
+    if commit_message_lines[1] != "":
+        _printErrorQuit(
+            "Please add an empty line between the commit title and "
+            "its description"
+        )
 
-# Encourage providing descriptions
-if re.search(
-    "^(Signed-off-by|Change-Id|Reviewed-by):", commit_message_lines[2]
-):
-    print("Warning: Commit does not have a description")
+    # Encourage providing descriptions
+    if len(commit_message_lines) > 2:
+        if re.search(
+            "^(Signed-off-by|Change-Id|Reviewed-by):", commit_message_lines[2]
+        ):
+            print("Warning: Commit does not have a description")
 
 sys.exit(0)

@@ -60,20 +60,16 @@ namespace gem5
 {
 
 MSHR::MSHR(const std::string &name)
-    :   QueueEntry(name),
-        downstreamPending(false),
-        pendingModified(false),
-        postInvalidate(false), postDowngrade(false),
-        wasWholeLineWrite(false), isForward(false),
-        targets(name + ".targets"),
-        deferredTargets(name + ".deferredTargets")
+    : QueueEntry(name), Printable(), downstreamPending(false),
+      pendingModified(false), postInvalidate(false), postDowngrade(false),
+      wasWholeLineWrite(false), isForward(false), readyIter(), allocIter(),
+      targets(name + ".targets"), deferredTargets(name + ".deferredTargets")
 {
 }
 
 MSHR::TargetList::TargetList(const std::string &name)
-    :   Named(name),
-        needsWritable(false), hasUpgrade(false),
-        allocOnFill(false), hasFromCache(false)
+    : Named(name), needsWritable(false), hasUpgrade(false), allocOnFill(false),
+      hasFromCache(false), canMergeWrites(true)
 {}
 
 
@@ -140,6 +136,7 @@ MSHR::TargetList::updateWriteFlags(PacketPtr pkt)
             Request::MEM_SWAP_COND | Request::SECURE | Request::LOCKED_RMW;
         const auto &req_flags = pkt->req->getFlags();
         bool compat_write = !req_flags.isSet(no_merge_flags);
+        bool masked_write = pkt->isMaskedWrite();
 
         // if this is the first write, it might be a whole
         // line write and even if we can't merge any
@@ -147,7 +144,7 @@ MSHR::TargetList::updateWriteFlags(PacketPtr pkt)
         // it as a whole line write (e.g., SECURE whole line
         // write)
         bool first_write = empty();
-        if (first_write || compat_write) {
+        if (!masked_write && (first_write || compat_write)) {
             auto offset = pkt->getOffset(blkSize);
             auto begin = writesBitmap.begin() + offset;
             std::fill(begin, begin + pkt->getSize(), true);

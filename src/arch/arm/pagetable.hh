@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2012-2013, 2021 Arm Limited
+ * Copyright (c) 2010, 2012-2013, 2021, 2023-2024 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -49,6 +49,10 @@
 #include "arch/generic/mmu.hh"
 #include "enums/TypeTLB.hh"
 #include "enums/ArmLookupLevel.hh"
+#include "mem/cache/replacement_policies/replaceable_entry.hh"
+#include "mem/cache/tags/indexing_policies/base.hh"
+#include "params/TLBIndexingPolicy.hh"
+#include "params/TLBSetAssociative.hh"
 #include "sim/serialize.hh"
 
 namespace gem5
@@ -91,6 +95,8 @@ struct PageTableOps
 {
     typedef enums::ArmLookupLevel LookupLevel;
     typedef int64_t pte_t;
+
+    virtual ~PageTableOps() = default;
 
     virtual bool isValid(pte_t pte, unsigned level) const = 0;
     virtual bool isLeaf(pte_t pte, unsigned level) const = 0;
@@ -161,49 +167,82 @@ struct V8PageTableOps64k : public PageTableOps
     LookupLevel lastLevel() const override;
 };
 
-// ITB/DTB table entry
-struct TlbEntry : public Serializable
+struct TlbEntry;
+
+class TLBTypes
 {
   public:
-    typedef enums::ArmLookupLevel LookupLevel;
-
-    enum class MemoryType : std::uint8_t
+    struct KeyType
     {
-        StronglyOrdered,
-        Device,
-        Normal
-    };
+        KeyType() = default;
+        explicit KeyType(const TlbEntry &entry);
 
-    enum class DomainType : std::uint8_t
-    {
-        NoAccess = 0,
-        Client,
-        Reserved,
-        Manager
-    };
-
-    struct Lookup
-    {
         // virtual address
         Addr va = 0;
+        // page size
+        Addr pageSize = Grain4KB;
+        // lookup size:
+        // * != 0 -> this is a range based lookup.
+        //           end_address = va + size
+        // * == 0 -> This is a normal lookup. size should
+        //           be ignored
+        Addr size = 0;
         // context id/address space id to use
         uint16_t asn = 0;
         // if on lookup asn should be ignored
         bool ignoreAsn = false;
         // The virtual machine ID used for stage 2 translation
         vmid_t vmid = 0;
-        // if the lookup is done from hyp mode
-        bool hyp = false;
         // if the lookup is secure
-        bool secure = false;
+        SecurityState ss = SecurityState::NonSecure;
         // if the lookup should modify state
         bool functional = false;
         // selecting the translation regime
-        ExceptionLevel targetEL = EL0;
-        // if we are in host (EL2&0 regime)
-        bool inHost = false;
+        TranslationRegime targetRegime = TranslationRegime::EL10;
         // mode to differentiate between read/writes/fetches.
         BaseMMU::Mode mode = BaseMMU::Read;
+    };
+
+    using Params = TLBIndexingPolicyParams;
+};
+using TLBIndexingPolicy = IndexingPolicyTemplate<TLBTypes>;
+
+class TLBSetAssociative : public TLBIndexingPolicy
+{
+  public:
+    PARAMS(TLBSetAssociative);
+    TLBSetAssociative(const Params &p)
+      : TLBIndexingPolicy(p, p.num_entries, 0)
+    {}
+
+    std::vector<ReplaceableEntry*>
+    getPossibleEntries(const KeyType &key) const override
+    {
+        Addr set_number = (key.va >> key.pageSize) & setMask;
+        return sets[set_number];
+    }
+
+    Addr
+    regenerateAddr(const KeyType &key,
+                   const ReplaceableEntry *entry) const override
+    {
+        panic("Unimplemented\n");
+    }
+};
+
+// ITB/DTB table entry
+struct TlbEntry : public ReplaceableEntry, Serializable
+{
+  public:
+    using LookupLevel = enums::ArmLookupLevel;
+    using KeyType = TLBTypes::KeyType;
+    using IndexingPolicy = TLBIndexingPolicy;
+
+    enum class MemoryType : std::uint8_t
+    {
+        StronglyOrdered,
+        Device,
+        Normal
     };
 
     // Matching variables
@@ -219,11 +258,13 @@ struct TlbEntry : public Serializable
 
     uint16_t asid;          // Address Space Identifier
     vmid_t vmid;            // Virtual machine Identifier
+    GrainSize tg;           // Translation Granule Size
     uint8_t N;              // Number of bits in pagesize
     uint8_t innerAttrs;
     uint8_t outerAttrs;
     uint8_t ap;             // Access permissions bits
     uint8_t hap;            // Hyp access permissions bits
+    uint8_t piindex;        // Indirect permission index.
     DomainType domain;         // Access Domain
 
     MemoryType mtype;
@@ -231,16 +272,17 @@ struct TlbEntry : public Serializable
     // True if the long descriptor format is used for this entry (LPAE only)
     bool longDescFormat; // @todo use this in the update attribute bethod
 
-    bool isHyp;
     bool global;
     bool valid;
 
     // True if the entry targets the non-secure physical address space
     bool ns;
-    // True if the entry was brought in from a non-secure page table
-    bool nstid;
-    // Exception level on insert, AARCH64 EL0&1, AARCH32 -> el=1
-    ExceptionLevel el;
+    // Security state of the translation regime
+    SecurityState ss;
+    // IPA Space (stage2 entries only)
+    PASpace ipaSpace;
+    // Translation regime on insert, AARCH64 EL0&1, AARCH32 -> el=1
+    TranslationRegime regime;
     // This is used to distinguish between instruction and data entries
     // in unified TLBs
     TypeTLB type;
@@ -258,19 +300,25 @@ struct TlbEntry : public Serializable
     bool xn;                // Execute Never
     bool pxn;               // Privileged Execute Never (LPAE only)
 
+    bool xs;                // xs attribute from FEAT_XS
+
     //Construct an entry that maps to physical address addr for SE mode
     TlbEntry(Addr _asn, Addr _vaddr, Addr _paddr,
              bool uncacheable, bool read_only) :
          pfn(_paddr >> PageShift), size(PageBytes - 1), vpn(_vaddr >> PageShift),
          attributes(0), lookupLevel(LookupLevel::L1),
-         asid(_asn), vmid(0), N(0),
+         asid(_asn), vmid(0), tg(Grain4KB), N(0),
          innerAttrs(0), outerAttrs(0), ap(read_only ? 0x3 : 0), hap(0x3),
+         piindex(0),
          domain(DomainType::Client),  mtype(MemoryType::StronglyOrdered),
-         longDescFormat(false), isHyp(false), global(false), valid(true),
-         ns(true), nstid(true), el(EL0), type(TypeTLB::unified),
-         partial(false),
+         longDescFormat(false), global(false), valid(true),
+         ns(true), ss(SecurityState::NonSecure),
+         ipaSpace(PASpace::NonSecure),
+         regime(TranslationRegime::EL10),
+         type(TypeTLB::unified), partial(false),
          nonCacheable(uncacheable),
-         shareable(false), outerShareable(false), xn(0), pxn(0)
+         shareable(false), outerShareable(false), xn(0), pxn(0),
+         xs(true)
     {
         // no restrictions by default, hap = 0x3
 
@@ -281,18 +329,75 @@ struct TlbEntry : public Serializable
 
     TlbEntry() :
          pfn(0), size(0), vpn(0), attributes(0), lookupLevel(LookupLevel::L1),
-         asid(0), vmid(0), N(0),
-         innerAttrs(0), outerAttrs(0), ap(0), hap(0x3),
+         asid(0), vmid(0), tg(ReservedGrain), N(0),
+         innerAttrs(0), outerAttrs(0), ap(0), hap(0x3), piindex(0),
          domain(DomainType::Client), mtype(MemoryType::StronglyOrdered),
-         longDescFormat(false), isHyp(false), global(false), valid(false),
-         ns(true), nstid(true), el(EL0), type(TypeTLB::unified),
-         partial(false), nonCacheable(false),
-         shareable(false), outerShareable(false), xn(0), pxn(0)
+         longDescFormat(false), global(false), valid(false),
+         ns(true), ss(SecurityState::NonSecure),
+         ipaSpace(PASpace::NonSecure),
+         regime(TranslationRegime::EL10),
+         type(TypeTLB::unified), partial(false), nonCacheable(false),
+         shareable(false), outerShareable(false), xn(0), pxn(0),
+         xs(true)
     {
         // no restrictions by default, hap = 0x3
 
         // @todo Check the memory type
     }
+    TlbEntry(const TlbEntry &rhs) = default;
+    TlbEntry& operator=(TlbEntry rhs)
+    {
+        swap(rhs);
+        return *this;
+    }
+
+    void
+    swap(TlbEntry &rhs)
+    {
+        std::swap(pfn, rhs.pfn);
+        std::swap(size, rhs.size);
+        std::swap(vpn, rhs.vpn);
+        std::swap(attributes, rhs.attributes);
+        std::swap(lookupLevel, rhs.lookupLevel);
+        std::swap(asid, rhs.asid);
+        std::swap(vmid, rhs.vmid);
+        std::swap(tg, rhs.tg);
+        std::swap(N, rhs.N);
+        std::swap(innerAttrs, rhs.innerAttrs);
+        std::swap(outerAttrs, rhs.outerAttrs);
+        std::swap(ap, rhs.ap);
+        std::swap(hap, rhs.hap);
+        std::swap(piindex, rhs.piindex);
+        std::swap(domain, rhs.domain);
+        std::swap(mtype, rhs.mtype);
+        std::swap(longDescFormat, rhs.longDescFormat);
+        std::swap(global, rhs.global);
+        std::swap(valid, rhs.valid);
+        std::swap(ns, rhs.ns);
+        std::swap(ss, rhs.ss);
+        std::swap(regime, rhs.regime);
+        std::swap(type, rhs.type);
+        std::swap(partial, rhs.partial);
+        std::swap(nonCacheable, rhs.nonCacheable);
+        std::swap(shareable, rhs.shareable);
+        std::swap(outerShareable, rhs.outerShareable);
+        std::swap(xn, rhs.xn);
+        std::swap(pxn, rhs.pxn);
+        std::swap(xs, rhs.xs);
+    }
+
+    /** Need for compliance with the AssociativeCache interface */
+    void
+    invalidate()
+    {
+        valid = false;
+    }
+
+    /** Need for compliance with the AssociativeCache interface */
+    void insert(const KeyType &key) {}
+
+    /** Need for compliance with the AssociativeCache interface */
+    bool isValid() const { return valid; }
 
     void
     updateVaddr(Addr new_vaddr)
@@ -307,41 +412,41 @@ struct TlbEntry : public Serializable
     }
 
     bool
-    match(const Lookup &lookup) const
+    matchAddress(const KeyType &key) const
+    {
+        Addr page_addr = vpn << N;
+        if (key.size) {
+            // This is a range based loookup
+            return key.va <= page_addr + size &&
+                   key.va + key.size > page_addr;
+        } else {
+            // This is a normal lookup
+            return key.va >= page_addr && key.va <= page_addr + size;
+        }
+    }
+
+    bool
+    match(const KeyType &key) const
     {
         bool match = false;
-        Addr v = vpn << N;
-        if (valid && lookup.va >= v && lookup.va <= v + size &&
-            (lookup.secure == !nstid) && (lookup.hyp == isHyp))
+        if (valid && matchAddress(key) && key.ss == ss)
         {
-            match = checkELMatch(lookup.targetEL, lookup.inHost);
+            match = checkRegime(key.targetRegime);
 
-            if (match && !lookup.ignoreAsn) {
-                match = global || (lookup.asn == asid);
+            if (match && !key.ignoreAsn) {
+                match = global || (key.asn == asid);
             }
-            if (match && nstid) {
-                match = isHyp || (lookup.vmid == vmid);
+            if (match && useVMID(key.targetRegime)) {
+                match = key.vmid == vmid;
             }
         }
         return match;
     }
 
     bool
-    checkELMatch(ExceptionLevel target_el, bool in_host) const
+    checkRegime(TranslationRegime target_regime) const
     {
-        switch (target_el) {
-            case EL3:
-                return el == EL3;
-            case EL2:
-              {
-                return el == EL2 || (el == EL0 && in_host);
-              }
-            case EL1:
-            case EL0:
-                return (el == EL0) || (el == EL1);
-            default:
-                return false;
-        }
+        return regime == target_regime;
     }
 
     Addr
@@ -400,11 +505,12 @@ struct TlbEntry : public Serializable
     }
 
     std::string
-    print() const
+    print() const override
     {
-        return csprintf("%#x, asn %d vmn %d hyp %d ppn %#x size: %#x ap:%d "
-                        "ns:%d nstid:%d g:%d el:%d", vpn << N, asid, vmid,
-                        isHyp, pfn << N, size, ap, ns, nstid, global, el);
+        return csprintf("%#x, asn %d vmn %d ppn %#x size: %#x ap:%d "
+                        "ns:%d ss:%s g:%d xs: %d regime:%s", vpn << N, asid, vmid,
+                        pfn << N, size, ap, ns, ss, global,
+                        xs, regimeToStr(regime));
     }
 
     void
@@ -416,12 +522,11 @@ struct TlbEntry : public Serializable
         SERIALIZE_SCALAR(vpn);
         SERIALIZE_SCALAR(asid);
         SERIALIZE_SCALAR(vmid);
-        SERIALIZE_SCALAR(isHyp);
         SERIALIZE_SCALAR(N);
         SERIALIZE_SCALAR(global);
         SERIALIZE_SCALAR(valid);
         SERIALIZE_SCALAR(ns);
-        SERIALIZE_SCALAR(nstid);
+        SERIALIZE_ENUM(ss);
         SERIALIZE_ENUM(type);
         SERIALIZE_SCALAR(nonCacheable);
         SERIALIZE_ENUM(lookupLevel);
@@ -447,12 +552,11 @@ struct TlbEntry : public Serializable
         UNSERIALIZE_SCALAR(vpn);
         UNSERIALIZE_SCALAR(asid);
         UNSERIALIZE_SCALAR(vmid);
-        UNSERIALIZE_SCALAR(isHyp);
         UNSERIALIZE_SCALAR(N);
         UNSERIALIZE_SCALAR(global);
         UNSERIALIZE_SCALAR(valid);
         UNSERIALIZE_SCALAR(ns);
-        UNSERIALIZE_SCALAR(nstid);
+        UNSERIALIZE_ENUM(ss);
         UNSERIALIZE_ENUM(type);
         UNSERIALIZE_SCALAR(nonCacheable);
         UNSERIALIZE_ENUM(lookupLevel);
@@ -476,6 +580,9 @@ struct TlbEntry : public Serializable
 const PageTableOps *getPageTableOps(GrainSize trans_granule);
 
 } // namespace ArmISA
+
+template class IndexingPolicyTemplate<ArmISA::TLBTypes>;
+
 } // namespace gem5
 
 #endif // __ARCH_ARM_PAGETABLE_H__

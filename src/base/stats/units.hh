@@ -75,7 +75,6 @@ namespace gem5
         UNIT_UNSPECIFIED, statistics::units::Unspecified::get(), \
         "Use statistics::units::Unspecified::get()")
 
-GEM5_DEPRECATED_NAMESPACE(Stats, statistics);
 namespace statistics
 {
 
@@ -110,7 +109,6 @@ namespace statistics
  *   - The new unit is significant enough to be not included in Count unit.
  *     (e.g. Cycle unit, Tick unit)
  */
-GEM5_DEPRECATED_NAMESPACE(Units, units);
 namespace units
 {
 
@@ -122,6 +120,7 @@ namespace units
 class Base
 {
   public:
+    virtual ~Base() = default;
     virtual std::string getUnitString() const = 0;
 };
 
@@ -352,9 +351,9 @@ class Rate : public Base
         "otherwise, it would be a Ratio");
 
   private:
-    Rate<T1,T2>() {}
+    Rate() {}
   public:
-    Rate<T1,T2>(Rate<T1,T2> const&) = delete;
+    Rate(Rate const&) = delete;
     void operator=(Rate<T1,T2> const&) = delete;
     static Rate<T1,T2>*
     get()

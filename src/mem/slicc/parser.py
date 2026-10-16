@@ -42,7 +42,10 @@ import re
 import sys
 
 from code_formatter import code_formatter
-from grammar import Grammar, ParseError
+from grammar import (
+    Grammar,
+    ParseError,
+)
 
 import slicc.ast as ast
 import slicc.util as util
@@ -51,16 +54,47 @@ from slicc.symbols import SymbolTable
 
 class SLICC(Grammar):
     def __init__(
-        self, filename, base_dir, verbose=False, traceback=False, **kwargs
+        self,
+        protocol,
+        includes,
+        base_dir,
+        verbose=False,
+        traceback=False,
+        **kwargs,
     ):
+        """Entrypoint for SLICC parsing
+        protocol: The protocol `.slicc` file to parse
+        includes: list of `.slicc` files that are shared between all protocols
+        """
         self.protocol = None
         self.traceback = traceback
         self.verbose = verbose
         self.symtab = SymbolTable(self)
         self.base_dir = base_dir
+        self.yacc_kwargs["debug"] = self.verbose
+        self.yacc_kwargs["write_tables"] = self.verbose
+
+        # Update slicc_interface/ProtocolInfo.cc/hh if updating this.
+        self.options = {
+            "partial_func_reads": False,
+            "use_secondary_load_linked": False,
+            "use_secondary_store_conditional": False,
+            "supports_flushes": False,
+        }
+
+        if not includes:
+            # raise error
+            pass
 
         try:
-            self.decl_list = self.parse_file(filename, **kwargs)
+            self.decl_list = self.parse_file(includes[0], **kwargs)
+            for include in includes[1:]:
+                self.decl_list += self.parse_file(include, **kwargs)
+            # set all of the types parsed so far as shared
+            self.decl_list.setShared()
+
+            if protocol:
+                self.decl_list += self.parse_file(protocol, **kwargs)
         except ParseError as e:
             if not self.traceback:
                 sys.exit(str(e))
@@ -86,7 +120,9 @@ class SLICC(Grammar):
         self.symtab.writeHTMLFiles(html_path)
 
     def files(self):
-        f = set(["Types.hh"])
+        f = set()
+        if self.protocol:
+            f |= {os.path.join(self.protocol, "Types.hh")}
 
         f |= self.decl_list.files()
 
@@ -282,14 +318,24 @@ class SLICC(Grammar):
         p[0] = []
 
     def p_decl__protocol(self, p):
-        "decl : PROTOCOL STRING SEMI"
+        "decl : PROTOCOL STRING exprs SEMI"
         if self.protocol:
-            msg = "Protocol can only be set once! Error at %s:%s\n" % (
+            msg = "Protocol can only be set once! Error at {}:{}\n".format(
                 self.current_source,
                 self.current_line,
             )
             raise ParseError(msg)
         self.protocol = p[2]
+        # Check for options
+        for option in p[3]:
+            assert type(option) is ast.VarExprAST
+            if option.name in self.options:
+                self.options[option.name] = True
+            else:
+                raise ParseError(
+                    f"Unknown option '{option.name}' for protocol "
+                    f"at {self.current_source}:{self.current_line}"
+                )
         p[0] = None
 
     def p_decl__include(self, p):
@@ -520,7 +566,7 @@ class SLICC(Grammar):
 
     def p_typestr__multi(self, p):
         "typestr : typestr DOUBLE_COLON ident"
-        p[0] = "%s::%s" % (p[1], p[3])
+        p[0] = f"{p[1]}::{p[3]}"
 
     def p_typestr__single(self, p):
         "typestr : ident"
@@ -633,11 +679,15 @@ class SLICC(Grammar):
 
     def p_statement__enqueue(self, p):
         "statement : ENQUEUE '(' var ',' type ')' statements"
-        p[0] = ast.EnqueueStatementAST(self, p[3], p[5], None, p[7])
+        p[0] = ast.EnqueueStatementAST(self, p[3], p[5], None, None, p[7])
 
     def p_statement__enqueue_latency(self, p):
         "statement : ENQUEUE '(' var ',' type ',' expr ')' statements"
-        p[0] = ast.EnqueueStatementAST(self, p[3], p[5], p[7], p[9])
+        p[0] = ast.EnqueueStatementAST(self, p[3], p[5], p[7], None, p[9])
+
+    def p_statement__enqueue_latency_bypass_strict_fifo(self, p):
+        "statement : ENQUEUE '(' var ',' type ',' expr ',' expr ')' statements"
+        p[0] = ast.EnqueueStatementAST(self, p[3], p[5], p[7], p[9], p[11])
 
     def p_statement__defer_enqueueing(self, p):
         "statement : DEFER_ENQUEUEING '(' var ',' type ')' statements"

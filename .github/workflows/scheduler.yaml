@@ -1,0 +1,81 @@
+---
+name: Workflow Scheduler
+
+# GitHub scheduled workflows run on the default branch ('stable' in the case of
+# gem5). this means for changes in a workflow to take effect, the default
+# branch must be updated. This is not ideal as it requires regular commits into
+# the stable branch. Ideally we just want to update the workflow on develop and
+# have it run on the develop branch.
+#
+# This workflow is designed to run on the stable branch and will trigger other
+# workflows on the develop branch.
+#
+# Each cron expression identifies the workflow or workflows to dispatch. This
+# avoids using the runner's clock, since GitHub may delay scheduled runs and
+# cause two hourly invocations to observe the same hour.
+
+on:
+    schedule:
+        # Daily tests at 7:30pm UTC, except Friday.
+        - cron: 30 19 * * 0-4,6
+        # Daily and Weekly tests at 7:30pm UTC on Friday.
+        - cron: 30 19 * * 5
+        # Compiler tests at 9:30pm UTC on Tuesday.
+        - cron: 30 21 * * 2
+        # Weekly repository status at 4:30pm UTC on Tuesday.
+        - cron: 30 16 * * 2
+        # Agentics maintenance at 4:30pm UTC on Friday.
+        - cron: 30 16 * * 5
+
+env:
+  # This is the token used to authenticate with GitHub.
+  # It is required to run the `gh` CLI.
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+    schedule-workflows:
+        runs-on: ubuntu-24.04
+        steps:
+            # This step is necessary to allow the `gh` CLI to be used in the
+            # following steps. The `gh` CLI is used to trigger the workflows.
+            # and needs to be used inside a the same repository where the
+            # workflows are defined.
+            - name: Checkout Repository
+              uses: actions/checkout@v7
+
+            - name: Daily Tests
+              if: >-
+                  github.event.schedule == '30 19 * * 0-4,6' ||
+                  github.event.schedule == '30 19 * * 5'
+              run: |
+                  gh workflow run daily-tests.yaml --ref develop >/dev/null
+                  echo "Daily test scheduled to run on develop branch."
+
+            - name: Weekly Tests and CI-Daily Tests for Codecov
+              if: github.event.schedule == '30 19 * * 5'
+              run: |
+                  gh workflow run weekly-tests.yaml --ref develop >/dev/null
+                  gh workflow run ci-daily-codecov.yaml --ref develop >/dev/null
+                  echo "Weekly test and runs of CI and Daily tests for code" \
+                  "coverage scheduled to run on develop branch."
+
+            - name: Compiler Tests
+              if: github.event.schedule == '30 21 * * 2'
+              run: |
+                  gh workflow run compiler-tests.yaml --ref develop >/dev/null
+                  echo "Compiler tests scheduled to run on the develop branch."
+
+
+            - name: Weekly Repo Status
+              if: github.event.schedule == '30 16 * * 2'
+              run: |
+                  gh workflow run weekly-repo-status.lock.yml \
+                      --ref develop >/dev/null
+                  echo "Weekly repository status scheduled on develop."
+
+            - name: Agentics Maintenance
+              if: github.event.schedule == '30 16 * * 5'
+              run: |
+                  gh workflow run agentics-maintenance.yml \
+                      --ref develop >/dev/null
+                  echo "Agentics maintenance scheduled on develop."

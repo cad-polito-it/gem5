@@ -33,8 +33,8 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from m5.params import *
 from m5.objects.ClockedObject import ClockedObject
+from m5.params import *
 
 
 class MemDelay(ClockedObject):
@@ -44,16 +44,10 @@ class MemDelay(ClockedObject):
     abstract = True
 
     mem_side_port = RequestPort(
-        "This port sends requests and " "receives responses"
-    )
-    master = DeprecatedParam(
-        mem_side_port, "`master` is now called `mem_side_port`"
+        "This port sends requests and receives responses"
     )
     cpu_side_port = ResponsePort(
-        "This port receives requests and " "sends responses"
-    )
-    slave = DeprecatedParam(
-        cpu_side_port, "`slave` is now called `cpu_side_port`"
+        "This port receives requests and sends responses"
     )
 
 

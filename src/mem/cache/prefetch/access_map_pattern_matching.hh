@@ -38,8 +38,9 @@
 #ifndef __MEM_CACHE_PREFETCH_ACCESS_MAP_PATTERN_MATCHING_HH__
 #define __MEM_CACHE_PREFETCH_ACCESS_MAP_PATTERN_MATCHING_HH__
 
-#include "mem/cache/prefetch/associative_set.hh"
+#include "base/cache/associative_cache.hh"
 #include "mem/cache/prefetch/queued.hh"
+#include "mem/cache/tags/tagged_entry.hh"
 #include "mem/packet.hh"
 #include "sim/clocked_object.hh"
 
@@ -49,7 +50,6 @@ namespace gem5
 struct AccessMapPatternMatchingParams;
 struct AMPMPrefetcherParams;
 
-GEM5_DEPRECATED_NAMESPACE(Prefetcher, prefetch);
 namespace prefetch
 {
 
@@ -95,9 +95,10 @@ class AccessMapPatternMatching : public ClockedObject
         /** vector containing the state of the cachelines in this zone */
         std::vector<AccessMapState> states;
 
-        AccessMapEntry(size_t num_entries)
+        AccessMapEntry(size_t num_entries, TagExtractor ext)
           : TaggedEntry(), states(num_entries, AM_INIT)
         {
+            registerTagExtractor(ext);
         }
 
         void
@@ -110,7 +111,7 @@ class AccessMapPatternMatching : public ClockedObject
         }
     };
     /** Access map table */
-    AssociativeSet<AccessMapEntry> accessMapTable;
+    AssociativeCache<AccessMapEntry> accessMapTable;
 
     /**
      * Number of good prefetches
@@ -191,7 +192,8 @@ class AccessMapPatternMatching : public ClockedObject
 
     void startup() override;
     void calculatePrefetch(const Base::PrefetchInfo &pfi,
-        std::vector<Queued::AddrPriority> &addresses);
+        std::vector<Queued::AddrPriority> &addresses,
+        const CacheAccessor &cache);
 };
 
 class AMPM : public Queued
@@ -202,7 +204,8 @@ class AMPM : public Queued
     ~AMPM() = default;
 
     void calculatePrefetch(const PrefetchInfo &pfi,
-                           std::vector<AddrPriority> &addresses) override;
+                           std::vector<AddrPriority> &addresses,
+                           const CacheAccessor &cache) override;
 };
 
 } // namespace prefetch

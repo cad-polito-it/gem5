@@ -1,4 +1,16 @@
 /*
+ * Copyright (c) 2022-2023 The University of Edinburgh
+ * All rights reserved
+ *
+ * The license below extends only to copyright in the software and shall
+ * not be construed as granting a license to any other intellectual
+ * property including but not limited to intellectual property relating
+ * to a hardware implementation of the functionality of the software
+ * licensed hereunder.  You may use the software subject to the license
+ * terms below provided that you ensure that this notice is replicated
+ * unmodified and in its entirety in all distributions of the software,
+ * modified or unmodified, in source code or in binary form.
+ *
  * Copyright (c) 2014 The University of Wisconsin
  *
  * Copyright (c) 2006 INRIA (Institut National de Recherche en
@@ -39,7 +51,6 @@
 
 #include "base/intmath.hh"
 #include "base/logging.hh"
-#include "base/random.hh"
 #include "base/trace.hh"
 #include "debug/Fetch.hh"
 #include "debug/LTage.hh"
@@ -61,11 +72,21 @@ LTAGE::init()
     TAGE::init();
 }
 
+void
+LTAGE::branchPlaceholder(ThreadID tid, Addr pc,
+                         bool uncond, void * &bpHistory)
+{
+    LTageBranchInfo *bi = new LTageBranchInfo(*tage, *loopPredictor,
+                                              pc, !uncond);
+    bpHistory = (void*)(bi);
+}
+
 //prediction
 bool
 LTAGE::predict(ThreadID tid, Addr branch_pc, bool cond_branch, void* &b)
 {
-    LTageBranchInfo *bi = new LTageBranchInfo(*tage, *loopPredictor);
+    LTageBranchInfo *bi = new LTageBranchInfo(*tage, *loopPredictor,
+                                              branch_pc, cond_branch);
     b = (void*)(bi);
 
     bool pred_taken = tage->tagePredict(tid, branch_pc, cond_branch,
@@ -94,8 +115,8 @@ LTAGE::predict(ThreadID tid, Addr branch_pc, bool cond_branch, void* &b)
 
 // PREDICTOR UPDATE
 void
-LTAGE::update(ThreadID tid, Addr branch_pc, bool taken, void* bp_history,
-              bool squashed, const StaticInstPtr & inst, Addr corrTarget)
+LTAGE::update(ThreadID tid, Addr pc, bool taken, void * &bp_history,
+              bool squashed, const StaticInstPtr & inst, Addr target)
 {
     assert(bp_history);
 
@@ -105,7 +126,7 @@ LTAGE::update(ThreadID tid, Addr branch_pc, bool taken, void* bp_history,
         if (tage->isSpeculativeUpdateEnabled()) {
             // This restores the global history, then update it
             // and recomputes the folded histories.
-            tage->squash(tid, taken, bi->tageBranchInfo, corrTarget);
+            tage->squash(tid, taken, target, inst, bi->tageBranchInfo);
 
             if (bi->tageBranchInfo->condBranch) {
                 loopPredictor->squashLoop(bi->lpBranchInfo);
@@ -114,29 +135,30 @@ LTAGE::update(ThreadID tid, Addr branch_pc, bool taken, void* bp_history,
         return;
     }
 
-    int nrand = random_mt.random<int>() & 3;
+    int nrand = rng->random<int>() & 3;
     if (bi->tageBranchInfo->condBranch) {
         DPRINTF(LTage, "Updating tables for branch:%lx; taken?:%d\n",
-                branch_pc, taken);
+                pc, taken);
         tage->updateStats(taken, bi->tageBranchInfo);
 
         loopPredictor->updateStats(taken, bi->lpBranchInfo);
 
-        loopPredictor->condBranchUpdate(tid, branch_pc, taken,
+        loopPredictor->condBranchUpdate(tid, pc, taken,
             bi->tageBranchInfo->tagePred, bi->lpBranchInfo, instShiftAmt);
 
-        tage->condBranchUpdate(tid, branch_pc, taken, bi->tageBranchInfo,
-            nrand, corrTarget, bi->lpBranchInfo->predTaken);
+        tage->condBranchUpdate(tid, pc, taken, bi->tageBranchInfo,
+            nrand, target, bi->lpBranchInfo->predTaken);
     }
 
-    tage->updateHistories(tid, branch_pc, taken, bi->tageBranchInfo, false,
-                          inst, corrTarget);
+    tage->updateHistories(tid, pc, false, taken, target,
+                           inst, bi->tageBranchInfo);
 
     delete bi;
+    bp_history = nullptr;
 }
 
 void
-LTAGE::squash(ThreadID tid, void *bp_history)
+LTAGE::squash(ThreadID tid, void * &bp_history)
 {
     LTageBranchInfo* bi = (LTageBranchInfo*)(bp_history);
 

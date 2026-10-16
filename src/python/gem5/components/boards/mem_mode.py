@@ -24,8 +24,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-"""Specifies the MemMode enum
-"""
+"""Specifies the MemMode enum"""
 
 from enum import Enum
 
@@ -38,10 +37,10 @@ class MemMode(Enum):
 
 def mem_mode_to_string(mem_mode: MemMode) -> str:
     """
-    Returns the string form of the mem_mode, compatible with the gem5
+    Returns the string form of the ``mem_mode``, compatible with the gem5
     simulator.
 
-    :returns: The string form of the mem_mode
+    :returns: The string form of the ``mem_mode``.
     """
     if mem_mode == MemMode.TIMING:
         return "timing"

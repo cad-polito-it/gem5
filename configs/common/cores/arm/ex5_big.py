@@ -1,3 +1,15 @@
+# Copyright (c) 2025 Arm Limited
+# All rights reserved.
+#
+# The license below extends only to copyright in the software and shall
+# not be construed as granting a license to any other intellectual
+# property including but not limited to intellectual property relating
+# to a hardware implementation of the functionality of the software
+# licensed hereunder.  You may use the software subject to the license
+# terms below provided that you ensure that this notice is replicated
+# unmodified and in its entirety in all distributions of the software,
+# modified or unmodified, in source code or in binary form.
+#
 # Copyright (c) 2012 The Regents of The University of Michigan
 # Copyright (c) 2016 Centre National de la Recherche Scientifique
 # All rights reserved.
@@ -31,6 +43,7 @@ from m5.objects import *
 #                ex5 big core (based on the ARM Cortex-A15)
 # -----------------------------------------------------------------------
 
+
 # Simple ALU Instructions have a latency of 1
 class ex5_big_Simple_Int(FUDesc):
     opList = [OpDesc(opClass="IntAlu", opLat=1)]
@@ -42,7 +55,7 @@ class ex5_big_Complex_Int(FUDesc):
     opList = [
         OpDesc(opClass="IntMult", opLat=4, pipelined=True),
         OpDesc(opClass="IntDiv", opLat=11, pipelined=False),
-        OpDesc(opClass="IprAccess", opLat=3, pipelined=True),
+        OpDesc(opClass="System", opLat=3, pipelined=True),
     ]
     count = 1
 
@@ -58,6 +71,7 @@ class ex5_big_FP(FUDesc):
         OpDesc(opClass="SimdMisc", opLat=3),
         OpDesc(opClass="SimdMult", opLat=6),
         OpDesc(opClass="SimdMultAcc", opLat=5),
+        OpDesc(opClass="SimdMatMultAcc", opLat=5),
         OpDesc(opClass="SimdShift", opLat=3),
         OpDesc(opClass="SimdShiftAcc", opLat=3),
         OpDesc(opClass="SimdSqrt", opLat=9),
@@ -69,6 +83,7 @@ class ex5_big_FP(FUDesc):
         OpDesc(opClass="SimdFloatMisc", opLat=3),
         OpDesc(opClass="SimdFloatMult", opLat=6),
         OpDesc(opClass="SimdFloatMultAcc", opLat=1),
+        OpDesc(opClass="SimdFloatMatMultAcc", opLat=1),
         OpDesc(opClass="SimdFloatSqrt", opLat=9),
         OpDesc(opClass="FloatAdd", opLat=6),
         OpDesc(opClass="FloatCmp", opLat=5),
@@ -102,16 +117,37 @@ class ex5_big_FUP(FUPool):
     ]
 
 
-# Bi-Mode Branch Predictor
-class ex5_big_BP(BiModeBP):
-    globalPredictorSize = 4096
-    globalCtrBits = 2
-    choicePredictorSize = 1024
-    choiceCtrBits = 3
-    BTBEntries = 4096
-    BTBTagSize = 18
-    RASSize = 48
+class ex5_big_BTB(SimpleBTB):
+    numEntries = 4096
+    tagBits = 18
+    associativity = 1
     instShiftAmt = 2
+    btbReplPolicy = LRURP()
+    btbIndexingPolicy = BTBSetAssociative(
+        num_entries=Parent.numEntries,
+        set_shift=Parent.instShiftAmt,
+        assoc=Parent.associativity,
+        tag_bits=Parent.tagBits,
+    )
+
+
+# Bi-Mode Branch Predictor
+class ex5_big_BP(BranchPredictor):
+    conditionalBranchPred = BiModeBP(
+        globalPredictorSize=4096,
+        globalCtrBits=2,
+        choicePredictorSize=1024,
+        choiceCtrBits=3,
+    )
+    btb = ex5_big_BTB()
+    ras = ReturnAddrStack(numEntries=48)
+    instShiftAmt = 2
+
+
+# Instruction Queue
+class ex5_big_IQ(IQUnit):
+    fuPool = ex5_big_FUP()
+    numEntries = 48
 
 
 class ex5_big(ArmO3CPU):
@@ -119,7 +155,7 @@ class ex5_big(ArmO3CPU):
     SQEntries = 16
     LSQDepCheckShift = 0
     LFSTSize = 1024
-    SSITSize = 1024
+    SSITSize = "1024"
     decodeToFetchDelay = 1
     renameToFetchDelay = 1
     iewToFetchDelay = 1
@@ -141,7 +177,6 @@ class ex5_big(ArmO3CPU):
     dispatchWidth = 6
     issueWidth = 8
     wbWidth = 8
-    fuPool = ex5_big_FUP()
     iewToCommitDelay = 1
     renameToROBDelay = 1
     commitWidth = 8
@@ -151,11 +186,11 @@ class ex5_big(ArmO3CPU):
     forwardComSize = 5
     numPhysIntRegs = 90
     numPhysFloatRegs = 256
-    numIQEntries = 48
     numROBEntries = 60
 
     switched_out = False
     branchPred = ex5_big_BP()
+    instQueues = ex5_big_IQ()
 
 
 class L1Cache(Cache):
@@ -170,7 +205,7 @@ class L1Cache(Cache):
 # Instruction Cache
 class L1I(L1Cache):
     mshrs = 2
-    size = "32kB"
+    size = "32KiB"
     assoc = 2
     is_read_only = True
 
@@ -178,7 +213,7 @@ class L1I(L1Cache):
 # Data Cache
 class L1D(L1Cache):
     mshrs = 6
-    size = "32kB"
+    size = "32KiB"
     assoc = 2
     write_buffers = 16
 
@@ -190,12 +225,11 @@ class L2(Cache):
     response_latency = 15
     mshrs = 16
     tgts_per_mshr = 8
-    size = "2MB"
+    size = "2MiB"
     assoc = 16
     write_buffers = 8
-    prefetch_on_access = True
     clusivity = "mostly_excl"
     # Simple stride prefetcher
-    prefetcher = StridePrefetcher(degree=8, latency=1)
+    prefetcher = StridePrefetcher(degree=8, latency=1, prefetch_on_access=True)
     tags = BaseSetAssoc()
     replacement_policy = RandomRP()

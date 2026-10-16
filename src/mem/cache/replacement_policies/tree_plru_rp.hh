@@ -80,7 +80,6 @@ namespace gem5
 
 struct TreePLRURPParams;
 
-GEM5_DEPRECATED_NAMESPACE(ReplacementPolicy, replacement_policy);
 namespace replacement_policy
 {
 
@@ -123,7 +122,7 @@ class TreePLRU : public Base
     /**
      * Holds the latest temporary tree instance created by instantiateEntry().
      */
-    PLRUTree* treeInstance;
+    std::shared_ptr<PLRUTree> treeInstance;
 
   protected:
     /**

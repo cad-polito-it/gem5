@@ -28,13 +28,18 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import math
-import m5
-from m5.objects import *
-from m5.defines import buildEnv
-from m5.util import addToPath
-from .Ruby import create_topology
-from .Ruby import send_evicts
+
 from common import FileSystemConfig
+
+import m5
+from m5.defines import buildEnv
+from m5.objects import *
+from m5.util import addToPath
+
+from .Ruby import (
+    create_topology,
+    send_evicts,
+)
 
 addToPath("../")
 
@@ -94,7 +99,7 @@ class L2Cache(RubyCache):
         self.replacement_policy = TreePLRURP()
 
 
-class CPCntrl(CorePair_Controller, CntrlBase):
+class CPCntrl(MOESI_AMD_Base_CorePair_Controller, CntrlBase):
     def create(self, options, ruby_system, system):
         self.version = self.versionCount()
 
@@ -107,14 +112,14 @@ class CPCntrl(CorePair_Controller, CntrlBase):
         self.L2cache = L2Cache()
         self.L2cache.create(options)
 
-        self.sequencer = RubySequencer()
+        self.sequencer = RubySequencer(ruby_system=ruby_system)
         self.sequencer.version = self.seqCount()
         self.sequencer.dcache = self.L1D0cache
         self.sequencer.ruby_system = ruby_system
         self.sequencer.coreid = 0
         self.sequencer.is_cpu_sequencer = True
 
-        self.sequencer1 = RubySequencer()
+        self.sequencer1 = RubySequencer(ruby_system=ruby_system)
         self.sequencer1.version = self.seqCount()
         self.sequencer1.dcache = self.L1D1cache
         self.sequencer1.ruby_system = ruby_system
@@ -151,7 +156,7 @@ class L3Cache(RubyCache):
         self.replacement_policy = TreePLRURP()
 
 
-class L3Cntrl(L3Cache_Controller, CntrlBase):
+class L3Cntrl(MOESI_AMD_Base_L3Cache_Controller, CntrlBase):
     def create(self, options, ruby_system, system):
         self.version = self.versionCount()
         self.L3cache = L3Cache()
@@ -182,14 +187,16 @@ class L3Cntrl(L3Cache_Controller, CntrlBase):
         self.respToL3 = resp_to_l3
 
 
-class DirCntrl(Directory_Controller, CntrlBase):
+class DirCntrl(MOESI_AMD_Base_Directory_Controller, CntrlBase):
     def create(self, options, dir_ranges, ruby_system, system):
         self.version = self.versionCount()
 
         self.response_latency = 30
 
         self.addr_ranges = dir_ranges
-        self.directory = RubyDirectoryMemory()
+        self.directory = RubyDirectoryMemory(
+            block_size=ruby_system.block_size_bytes
+        )
 
         self.L3CacheMemory = L3Cache()
         self.L3CacheMemory.create(options, ruby_system, system)
@@ -327,7 +334,6 @@ def create_system(
     # For an odd number of CPUs, still create the right number of controllers
     cpuCluster = Cluster(extBW=512, intBW=512)  # 1 TB/s
     for i in range((options.num_cpus + 1) // 2):
-
         cp_cntrl = CPCntrl()
         cp_cntrl.create(options, ruby_system, system)
 

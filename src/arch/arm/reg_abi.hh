@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "base/logging.hh"
+#include "sim/pseudo_inst.hh"
 #include "sim/syscall_abi.hh"
 
 namespace gem5
@@ -51,7 +52,6 @@ struct RegABI64 : public GenericSyscallABI64
 
 } // namespace ArmISA
 
-GEM5_DEPRECATED_NAMESPACE(GuestABI, guest_abi);
 namespace guest_abi
 {
 
@@ -73,6 +73,21 @@ struct Argument<ABI, Arg,
         auto low = ABI::ArgumentRegs[state++];
         auto high = ABI::ArgumentRegs[state++];
         return (Arg)ABI::mergeRegs(tc, low, high);
+    }
+};
+
+template <>
+struct Argument<ArmISA::RegABI32, pseudo_inst::GuestAddr>
+{
+    using ABI = ArmISA::RegABI32;
+    using Arg = pseudo_inst::GuestAddr;
+
+    static Arg
+    get(ThreadContext *tc, typename ABI::State &state)
+    {
+        panic_if(state + 1 >= ABI::ArgumentRegs.size(),
+                "Ran out of syscall argument registers.");
+        return (Arg)bits(tc->getReg(ABI::ArgumentRegs[state++]), 31, 0);
     }
 };
 

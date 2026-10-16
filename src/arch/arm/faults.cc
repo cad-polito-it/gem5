@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2012-2014, 2016-2019, 2022 Arm Limited
+ * Copyright (c) 2010, 2012-2014, 2016-2019, 2022, 2024 Arm Limited
  * All rights reserved
  *
  * The license below extends only to copyright in the software and shall
@@ -44,6 +44,7 @@
 #include "arch/arm/insts/static_inst.hh"
 #include "arch/arm/interrupts.hh"
 #include "arch/arm/isa.hh"
+#include "arch/arm/regs/misc_accessors.hh"
 #include "arch/arm/self_debug.hh"
 #include "arch/arm/system.hh"
 #include "arch/arm/utility.hh"
@@ -378,22 +379,6 @@ ArmFault::getSyndromeReg64() const
     }
 }
 
-MiscRegIndex
-ArmFault::getFaultAddrReg64() const
-{
-    switch (toEL) {
-      case EL1:
-        return MISCREG_FAR_EL1;
-      case EL2:
-        return MISCREG_FAR_EL2;
-      case EL3:
-        return MISCREG_FAR_EL3;
-      default:
-        panic("Invalid exception level");
-        break;
-    }
-}
-
 void
 ArmFault::setSyndrome(ThreadContext *tc, MiscRegIndex syndrome_reg)
 {
@@ -503,9 +488,6 @@ ArmFault::invoke(ThreadContext *tc, const StaticInstPtr &inst)
 void
 ArmFault::invoke32(ThreadContext *tc, const StaticInstPtr &inst)
 {
-    if (vectorCatch(tc, inst))
-        return;
-
     // ARMv7 (ARM ARM issue C B1.9)
     bool have_security = ArmSystem::haveEL(tc, EL3);
 
@@ -568,7 +550,6 @@ ArmFault::invoke32(ThreadContext *tc, const StaticInstPtr &inst)
         cpsr.i = 1;
     }
     cpsr.it1 = cpsr.it2 = 0;
-    cpsr.j = 0;
     cpsr.pan = span ? 1 : saved_cpsr.pan;
     tc->setMiscReg(MISCREG_CPSR, cpsr);
 
@@ -625,8 +606,6 @@ ArmFault::invoke32(ThreadContext *tc, const StaticInstPtr &inst)
     PCState pc(new_pc);
     pc.thumb(cpsr.t);
     pc.nextThumb(pc.thumb());
-    pc.jazelle(cpsr.j);
-    pc.nextJazelle(pc.jazelle());
     pc.aarch64(!cpsr.width);
     pc.nextAArch64(!cpsr.width);
     pc.illegalExec(false);
@@ -669,7 +648,6 @@ ArmFault::invoke64(ThreadContext *tc, const StaticInstPtr &inst)
         // Force some bitfields to 0
         spsr.q = 0;
         spsr.it1 = 0;
-        spsr.j = 0;
         spsr.ge = 0;
         spsr.it2 = 0;
         spsr.t = 0;
@@ -711,36 +689,23 @@ ArmFault::invoke64(ThreadContext *tc, const StaticInstPtr &inst)
     // information
     [[maybe_unused]] ArmStaticInst *arm_inst = instrAnnotate(inst);
 
+    // Save exception syndrome
+    MiscRegIndex syndrome_index = getSyndromeReg64();
+    if ((nextMode() != MODE_IRQ) && (nextMode() != MODE_FIQ))
+        setSyndrome(tc, syndrome_index);
+
     // Set PC to start of exception handler
     Addr new_pc = purifyTaggedAddr(vec_address, tc, toEL, true);
     DPRINTF(Faults, "Invoking Fault (AArch64 target EL):%s cpsr:%#x PC:%#x "
-            "elr:%#x newVec: %#x %s\n", name(), cpsr, curr_pc, ret_addr,
-            new_pc, arm_inst ? csprintf("inst: %#x", arm_inst->encoding()) :
-            std::string());
+            "elr:%#x esr_el%d: %#x %s\n", name(), cpsr, curr_pc, ret_addr,
+            toEL, tc->readMiscRegNoEffect(syndrome_index), arm_inst ?
+            csprintf("inst: %#x", arm_inst->encoding()) : std::string());
     PCState pc(new_pc);
     pc.aarch64(!cpsr.width);
     pc.nextAArch64(!cpsr.width);
     pc.illegalExec(false);
     pc.stepped(false);
     tc->pcState(pc);
-
-    // Save exception syndrome
-    if ((nextMode() != MODE_IRQ) && (nextMode() != MODE_FIQ))
-        setSyndrome(tc, getSyndromeReg64());
-}
-
-bool
-ArmFault::vectorCatch(ThreadContext *tc, const StaticInstPtr &inst)
-{
-    SelfDebug *sd = ArmISA::ISA::getSelfDebug(tc);
-    VectorCatch* vc = sd->getVectorCatch(tc);
-    if (vc && !vc->isVCMatch()) {
-        Fault fault = sd->testVectorCatch(tc, 0x0, this);
-        if (fault != NoFault)
-            fault->invoke(tc, inst);
-        return true;
-    }
-    return false;
 }
 
 ArmStaticInst *
@@ -1067,29 +1032,6 @@ template<class T>
 void
 AbortFault<T>::invoke(ThreadContext *tc, const StaticInstPtr &inst)
 {
-    if (tranMethod == ArmFault::UnknownTran) {
-        tranMethod = longDescFormatInUse(tc) ? ArmFault::LpaeTran
-                                             : ArmFault::VmsaTran;
-
-        if ((tranMethod == ArmFault::VmsaTran) && this->routeToMonitor(tc)) {
-            // See ARM ARM B3-1416
-            bool override_LPAE = false;
-            TTBCR ttbcr_s = tc->readMiscReg(MISCREG_TTBCR_S);
-            [[maybe_unused]] TTBCR ttbcr_ns =
-                tc->readMiscReg(MISCREG_TTBCR_NS);
-            if (ttbcr_s.eae) {
-                override_LPAE = true;
-            } else {
-                // Unimplemented code option, not seen in testing.  May need
-                // extension according to the manual exceprt above.
-                DPRINTF(Faults, "Warning: Incomplete translation method "
-                        "override detected.\n");
-            }
-            if (override_LPAE)
-                tranMethod = ArmFault::LpaeTran;
-        }
-    }
-
     if (source == ArmFault::AsynchronousExternalAbort) {
         tc->getCpuPtr()->clearInterrupt(tc->threadId(), INT_ABT, 0);
     }
@@ -1126,23 +1068,53 @@ AbortFault<T>::invoke(ThreadContext *tc, const StaticInstPtr &inst)
             tc->setMiscReg(T::FsrIndex, fsr);
             tc->setMiscReg(T::FarIndex, faultAddr);
         }
-        DPRINTF(Faults, "Abort Fault source=%#x fsr=%#x faultAddr=%#x "\
-                "tranMethod=%#x\n", source, fsr, faultAddr, tranMethod);
+        DPRINTF(Faults, "Abort Fault source=%#x fsr=%#x faultAddr=%#x\n",
+                source, fsr, faultAddr);
     } else {  // AArch64
         // Set the FAR register.  Nothing else to do if we are in AArch64 state
         // because the syndrome register has already been set inside invoke64()
         if (stage2) {
             // stage 2 fault, set HPFAR_EL2 to the faulting IPA
             // and FAR_EL2 to the Original VA
-            tc->setMiscReg(AbortFault<T>::getFaultAddrReg64(), OVAddr);
+            misc_regs::writeRegister<misc_regs::FarAccessor>(
+                tc, OVAddr, this->toEL);
             tc->setMiscReg(MISCREG_HPFAR_EL2, bits(faultAddr, 47, 12) << 4);
 
             DPRINTF(Faults, "Abort Fault (Stage 2) VA: 0x%x IPA: 0x%x\n",
                     OVAddr, faultAddr);
         } else {
-            tc->setMiscReg(AbortFault<T>::getFaultAddrReg64(), faultAddr);
+            misc_regs::writeRegister<misc_regs::FarAccessor>(
+                tc, faultAddr, this->toEL);
         }
     }
+}
+
+template<class T>
+void
+AbortFault<T>::update(ThreadContext *tc)
+{
+    if (tranMethod == TranMethod::UnknownTran) {
+        tranMethod = longDescFormatInUse(tc) ? TranMethod::LpaeTran
+                                             : TranMethod::VmsaTran;
+
+        if ((tranMethod == TranMethod::VmsaTran) && this->routeToMonitor(tc)) {
+            // See ARM ARM B3-1416
+            bool override_LPAE = false;
+            TTBCR ttbcr_s = tc->readMiscReg(MISCREG_TTBCR_S);
+            if (ttbcr_s.eae) {
+                override_LPAE = true;
+            } else {
+                // Unimplemented code option, not seen in testing.  May need
+                // extension according to the manual exceprt above.
+                DPRINTF(Faults, "Warning: Incomplete translation method "
+                        "override detected.\n");
+            }
+            if (override_LPAE)
+                tranMethod = TranMethod::LpaeTran;
+        }
+    }
+
+    ArmFault::update(tc);
 }
 
 template<class T>
@@ -1168,8 +1140,8 @@ AbortFault<T>::getFaultStatusCode(ThreadContext *tc) const
 
     if (!this->to64) {
         // AArch32
-        assert(tranMethod != ArmFault::UnknownTran);
-        if (tranMethod == ArmFault::LpaeTran) {
+        assert(tranMethod != TranMethod::UnknownTran);
+        if (tranMethod == TranMethod::LpaeTran) {
             fsc = ArmFault::longDescFaultSources[source];
         } else {
             fsc = ArmFault::shortDescFaultSources[source];
@@ -1191,8 +1163,8 @@ AbortFault<T>::getFsr(ThreadContext *tc) const
     auto fsc = getFaultStatusCode(tc);
 
     // AArch32
-    assert(tranMethod != ArmFault::UnknownTran);
-    if (tranMethod == ArmFault::LpaeTran) {
+    assert(tranMethod != TranMethod::UnknownTran);
+    if (tranMethod == TranMethod::LpaeTran) {
         fsr.status = fsc;
         fsr.lpae   = 1;
     } else {
@@ -1252,6 +1224,17 @@ AbortFault<T>::isMMUFault() const
          (source <  ArmFault::DomainLL + 4))      ||
         ((source >= ArmFault::PermissionLL) &&
          (source <  ArmFault::PermissionLL + 4));
+}
+
+template<class T>
+bool
+AbortFault<T>::isExternalAbort() const
+{
+    return
+        (source == ArmFault::SynchronousExternalAbort)  ||
+        (source == ArmFault::AsynchronousExternalAbort) ||
+        ((source >= ArmFault::SynchExtAbtOnTranslTableWalkLL) &&
+         (source < ArmFault::SynchExtAbtOnTranslTableWalkLL + 4));
 }
 
 template<class T>
@@ -1397,6 +1380,7 @@ DataAbort::iss() const
     iss.wnr = write;
     iss.s1ptw = s1ptw;
     iss.cm = cm;
+    iss.ea = isExternalAbort();
 
     // ISS is valid if not caused by a stage 1 page table walk, and when taken
     // to AArch64 only when directed to EL2
@@ -1446,6 +1430,9 @@ DataAbort::annotate(AnnotationIDs id, uint64_t val)
         break;
       case OFA:
         faultAddr  = val;
+        break;
+      case WnR:
+        write = val;
         break;
       // Just ignore unknown ID's
       default:
@@ -1538,7 +1525,7 @@ PCAlignmentFault::invoke(ThreadContext *tc, const StaticInstPtr &inst)
     ArmFaultVals<PCAlignmentFault>::invoke(tc, inst);
     assert(from64);
     // Set the FAR
-    tc->setMiscReg(getFaultAddrReg64(), faultPC);
+    misc_regs::writeRegister<misc_regs::FarAccessor>(tc, faultPC, toEL);
 }
 
 bool
@@ -1682,8 +1669,7 @@ Watchpoint::invoke(ThreadContext *tc, const StaticInstPtr &inst)
 {
     ArmFaultVals<Watchpoint>::invoke(tc, inst);
     // Set the FAR
-    tc->setMiscReg(getFaultAddrReg64(), vAddr);
-
+    misc_regs::writeRegister<misc_regs::FarAccessor>(tc, vAddr, toEL);
 }
 
 bool

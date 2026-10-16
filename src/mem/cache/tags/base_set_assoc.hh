@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014,2017 ARM Limited
+ * Copyright (c) 2012-2014, 2017, 2023-2024 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -53,12 +53,12 @@
 
 #include "base/logging.hh"
 #include "base/types.hh"
-#include "mem/cache/base.hh"
 #include "mem/cache/cache_blk.hh"
 #include "mem/cache/replacement_policies/base.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
 #include "mem/cache/tags/base.hh"
 #include "mem/cache/tags/indexing_policies/base.hh"
+#include "mem/cache/tags/partitioning_policies/partition_manager.hh"
 #include "mem/packet.hh"
 #include "params/BaseSetAssoc.hh"
 
@@ -126,7 +126,7 @@ class BaseSetAssoc : public BaseTags
      */
     CacheBlk* accessBlock(const PacketPtr pkt, Cycles &lat) override
     {
-        CacheBlk *blk = findBlock(pkt->getAddr(), pkt->isSecure());
+        CacheBlk *blk = findBlock({pkt->getAddr(), pkt->isSecure()});
 
         // Access all tags in parallel, hence one in each way.  The data side
         // either accesses all blocks in parallel, or one block sequentially on
@@ -163,19 +163,26 @@ class BaseSetAssoc : public BaseTags
      * @param is_secure True if the target memory space is secure.
      * @param size Size, in bits, of new block to allocate.
      * @param evict_blks Cache blocks to be evicted.
+     * @param partition_id Partition ID for resource management.
      * @return Cache block to be replaced.
      */
-    CacheBlk* findVictim(Addr addr, const bool is_secure,
+    CacheBlk* findVictim(const CacheBlk::KeyType& key,
                          const std::size_t size,
-                         std::vector<CacheBlk*>& evict_blks) override
+                         std::vector<CacheBlk*>& evict_blks,
+                         const uint64_t partition_id=0) override
     {
         // Get possible entries to be victimized
-        const std::vector<ReplaceableEntry*> entries =
-            indexingPolicy->getPossibleEntries(addr);
+        std::vector<ReplaceableEntry*> entries =
+            indexingPolicy->getPossibleEntries(key);
+
+        // Filter entries based on PartitionID
+        if (partitionManager) {
+            partitionManager->filterByPartition(entries, partition_id);
+        }
 
         // Choose replacement victim from replacement candidates
-        CacheBlk* victim = static_cast<CacheBlk*>(replacementPolicy->getVictim(
-                                entries));
+        CacheBlk* victim = entries.empty() ? nullptr :
+            static_cast<CacheBlk*>(replacementPolicy->getVictim(entries));
 
         // There is only one eviction for this replacement
         evict_blks.push_back(victim);
@@ -196,6 +203,11 @@ class BaseSetAssoc : public BaseTags
 
         // Increment tag counter
         stats.tagsInUse++;
+
+        if (partitionManager) {
+            auto partition_id = partitionManager->readPacketPartitionID(pkt);
+            partitionManager->notifyAcquire(partition_id);
+        }
 
         // Update replacement policy
         replacementPolicy->reset(blk->replacementData, pkt);
@@ -230,13 +242,7 @@ class BaseSetAssoc : public BaseTags
      */
     Addr regenerateBlkAddr(const CacheBlk* blk) const override
     {
-        return indexingPolicy->regenerateAddr(blk->getTag(), blk);
-    }
-
-    void forEachBlk(std::function<void(CacheBlk &)> visitor) override {
-        for (CacheBlk& blk : blks) {
-            visitor(blk);
-        }
+        return indexingPolicy->regenerateAddr({blk->getTag(), false}, blk);
     }
 
     bool anyBlk(std::function<bool(CacheBlk &)> visitor) override {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018 ARM Limited
+ * Copyright (c) 2012-2018, 2023-2024 ARM Limited
  * All rights reserved.
  *
  * The license below extends only to copyright in the software and shall
@@ -49,6 +49,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iosfwd>
+#include <limits>
 #include <list>
 #include <string>
 
@@ -152,7 +153,7 @@ class CacheBlk : public TaggedEntry
     std::list<Lock> lockList;
 
   public:
-    CacheBlk()
+    CacheBlk() : TaggedEntry()
     {
         invalidate();
     }
@@ -176,13 +177,14 @@ class CacheBlk : public TaggedEntry
         assert(!isValid());
         assert(other.isValid());
 
-        insert(other.getTag(), other.isSecure());
+        insert({other.getTag(), other.isSecure()});
 
         if (other.wasPrefetched()) {
             setPrefetched();
         }
         setCoherenceBits(other.coherence);
         setTaskId(other.getTaskId());
+        setPartitionId(other.getPartitionId());
         setWhenReady(curTick());
         setRefCount(other.getRefCount());
         setSrcRequestorId(other.getSrcRequestorId());
@@ -205,6 +207,7 @@ class CacheBlk : public TaggedEntry
         clearCoherenceBits(AllBits);
 
         setTaskId(context_switch_task_id::Unknown);
+        setPartitionId(std::numeric_limits<uint64_t>::max());
         setWhenReady(MaxTick);
         setRefCount(0);
         setSrcRequestorId(Request::invldRequestorId);
@@ -287,6 +290,9 @@ class CacheBlk : public TaggedEntry
     /** Get the requestor id associated to this block. */
     uint32_t getSrcRequestorId() const { return _srcRequestorId; }
 
+    /** Getter for _partitionId */
+    uint64_t getPartitionId() const { return _partitionId; }
+
     /** Get the number of references to this block since insertion. */
     unsigned getRefCount() const { return _refCount; }
 
@@ -315,9 +321,11 @@ class CacheBlk : public TaggedEntry
      * @param is_secure Whether the block is in secure space or not.
      * @param src_requestor_ID The source requestor ID.
      * @param task_ID The new task ID.
+     * @param partition_id The source partition ID.
      */
-    void insert(const Addr tag, const bool is_secure,
-        const int src_requestor_ID, const uint32_t task_ID);
+    void insert(const KeyType &tag,
+        const int src_requestor_ID, const uint32_t task_ID,
+        const uint64_t partition_id);
     using TaggedEntry::insert;
 
     /**
@@ -453,7 +461,7 @@ class CacheBlk : public TaggedEntry
 
   protected:
     /** The current coherence status of this block. @sa CoherenceBits */
-    unsigned coherence;
+    unsigned coherence = 0;
 
     // The following setters have been marked as protected because their
     // respective variables should only be modified at 2 moments:
@@ -465,6 +473,10 @@ class CacheBlk : public TaggedEntry
 
     /** Set the source requestor id. */
     void setSrcRequestorId(const uint32_t id) { _srcRequestorId = id; }
+
+    /** Setter for _partitionId */
+    void
+    setPartitionId(const uint64_t partitionId) { _partitionId = partitionId; }
 
     /** Set the number of references to this block since insertion. */
     void setRefCount(const unsigned count) { _refCount = count; }
@@ -478,6 +490,10 @@ class CacheBlk : public TaggedEntry
 
     /** holds the source requestor ID for this block. */
     int _srcRequestorId = 0;
+
+    /** Partition ID of the activity that allocated this block */
+    /* This ID is used to enforce resource partitioning policies */
+    uint64_t _partitionId;
 
     /** Number of references to this block since it was brought in. */
     unsigned _refCount = 0;
@@ -510,11 +526,13 @@ class TempCacheBlk final : public CacheBlk
      * Creates a temporary cache block, with its own storage.
      * @param size The size (in bytes) of this cache block.
      */
-    TempCacheBlk(unsigned size) : CacheBlk()
+    TempCacheBlk(unsigned size, TagExtractor ext) : CacheBlk()
     {
         data = new uint8_t[size];
+        registerTagExtractor(ext);
     }
     TempCacheBlk(const TempCacheBlk&) = delete;
+    using CacheBlk::operator=;
     TempCacheBlk& operator=(const TempCacheBlk&) = delete;
     ~TempCacheBlk() { delete [] data; };
 
@@ -528,10 +546,10 @@ class TempCacheBlk final : public CacheBlk
     }
 
     void
-    insert(const Addr addr, const bool is_secure) override
+    insert(const KeyType &tag) override
     {
-        CacheBlk::insert(addr, is_secure);
-        _addr = addr;
+        CacheBlk::insert(tag);
+        _addr = tag.address;
     }
 
     /**

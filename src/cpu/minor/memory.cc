@@ -15,7 +15,6 @@
 #include "memory.hh"
 namespace gem5
 {
-    GEM5_DEPRECATED_NAMESPACE(Minor, minor);
 
     namespace minor
     {
@@ -518,7 +517,7 @@ namespace gem5
                 {
                     DPRINTF(MinorMem, "Discarding inst: %s as its stream state was unexpected, expected %d\n", *inst, mem_info.streamSeqNum);
                     if (fault == NoFault)
-                        cpu.stats.numDiscardedOps++;
+                        cpu.executeStats[inst->id.threadId]->numDiscardedOps++;
                 }
 
                 if (completed_inst && inst->isMemRef())
