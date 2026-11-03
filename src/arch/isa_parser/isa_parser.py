@@ -851,7 +851,7 @@ class ISAParser(Grammar):
     # String literal.  Note that these use only single quotes, and
     # can span multiple lines.
     def t_STRLIT(self, t):
-        r"(?m)'([^'])+'"
+        r"'([^'])+'"
         # strip off quotes
         t.value = t.value[1:-1]
         t.lexer.lineno += t.value.count("\n")
@@ -860,24 +860,24 @@ class ISAParser(Grammar):
     # "Code literal"... like a string literal, but delimiters are
     # '{{' and '}}' so they get formatted nicely under emacs c-mode
     def t_CODELIT(self, t):
-        r"(?m)\{\{([^\}]|}(?!\}))+\}\}"
+        r"\{\{([^\}]|}(?!\}))+\}\}"
         # strip off {{ & }}
         t.value = t.value[2:-2]
         t.lexer.lineno += t.value.count("\n")
         return t
 
     def t_CPPDIRECTIVE(self, t):
-        r"^\#[^\#].*\n"
+        r"(?m:^)\#[^\#].*\n"
         t.lexer.lineno += t.value.count("\n")
         return t
 
     def t_NEWFILE(self, t):
-        r'^\#\#newfile\s+"[^"]*"\n'
+        r'(?m:^)\#\#newfile\s+"[^"]*"\n'
         self.fileNameStack.push(t.lexer.lineno)
         t.lexer.lineno = LineTracker(t.value[11:-2])
 
     def t_ENDFILE(self, t):
-        r"^\#\#endfile\n"
+        r"(?m:^)\#\#endfile\n"
         t.lexer.lineno = self.fileNameStack.pop()
 
     #

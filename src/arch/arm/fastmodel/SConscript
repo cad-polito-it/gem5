@@ -218,7 +218,7 @@ class ProjectFileParser(Grammar):
     t_ID = r'[A-Za-z_]\w*'
 
     def t_STRLIT(self, t):
-        r'(?m)"([^"])*"'
+        r'"([^"])*"'
         # strip off quotes
         t.value = t.value[1:-1]
         t.lexer.lineno += t.value.count('\n')
