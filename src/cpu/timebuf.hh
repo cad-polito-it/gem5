@@ -146,7 +146,7 @@ class TimeBuffer
         for (unsigned i = 0; i < size; i++) {
             index[i] = ptr;
             std::memset(ptr, 0, sizeof(T));
-            new (ptr) T;
+            new (ptr) T();
             ptr += sizeof(T);
         }
 
@@ -186,7 +186,7 @@ class TimeBuffer
             ptr -= size;
         (reinterpret_cast<T *>(index[ptr]))->~T();
         std::memset(index[ptr], 0, sizeof(T));
-        new (index[ptr]) T;
+        new (index[ptr]) T();
     }
 
   protected:
